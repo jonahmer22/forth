@@ -1,0 +1,9 @@
+# binary
+langs
+
+# macos
+*.DS_Store
+
+# venvs
+*.venv
+env
