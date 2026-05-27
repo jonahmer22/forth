@@ -1,2 +1,5 @@
 all:
-	gcc main.c -Wpedantic -Wall -o lang
+	gcc main.c ./src/*.c -Iinclude -Wpedantic -Wall -o lang
+
+clean:
+	rm langs
