@@ -1,5 +1,5 @@
 all:
-	gcc main.c ./src/*.c -Iinclude -Wpedantic -Wall -o lang
+	gcc main.c ./arena/arena.c -Iarena -lm -Wall -o lang
 
 clean:
 	rm langs
