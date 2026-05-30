@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <inttypes.h>
+#include "arena/arena.h"
 
 // input line
 
@@ -16,13 +18,26 @@ char line[LINE_SIZE];
 
 // data stack
 
-double dstack[STACK_SIZE] = {0};
+typedef uintptr_t cell;
+typedef intptr_t scell;
+
+#define P_UNS_ESC "%" PRIuPTR
+#define P_SGN_ESC "%" PRIdPTR
+
+#define UNSIGNED (uintptr_t)
+#define SIGNED (intptr_t)
+
+cell dstack[STACK_SIZE] = {0};
 size_t dsp = 0;
 
-void dPush(double d){
+void dPush(cell d){
+    if(dsp >= STACK_SIZE){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack overflow.\n\t\tMax stack size %d.\n", 0x8008, STACK_SIZE);
+        exit(EXIT_FAILURE);
+    }
     dstack[dsp++] = d;
 }
-double dPop(){
+cell dPop(){
     return dsp == 0 ? 0 : dstack[--dsp];
 }
 void dClear(){
@@ -32,7 +47,7 @@ void dClear(){
 void dStackPrint(){
     printf("<%zu> ", dsp);
     for(size_t i = 0; i < dsp; i++){
-        printf("%g ", dstack[i]);
+        printf(P_SGN_ESC " ", dstack[i]);
     }
 }
 
@@ -42,6 +57,10 @@ uint64_t rstack[STACK_SIZE] = {0};
 size_t rsp = 0;
 
 void rPush(uint64_t r){
+    if(rsp >= STACK_SIZE){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tReturn stack overflow.\n\t\tMax stack size %d.\n", 0x8008, STACK_SIZE);
+        exit(EXIT_FAILURE);
+    }
     rstack[rsp++] = r;
 }
 uint64_t rPop(){
@@ -54,57 +73,48 @@ void rClear(){
 
 // parsing / tokenizing, whatever the fuck you wanna call it
 
-#define SYS_CHAR '.'
-
-typedef enum TokType{
-    TOK_NUM,
-    TOK_STR,
-    TOK_SYS_WORD,
-    TOK_WORD,
-    TOK_NONE    // only for internals, should not show up anywhere and should be considered a fatal error if encountered in the wild
-} TokType;
-
 typedef struct TokenList{
-    char *start;
-    char *end;
-
-    TokType type;
+    const char *start;
+    const char *end;
 
     struct TokenList *next;
 } TokenList;
 
 TokenList *tokenListInit(){
-    TokenList *temp = malloc(sizeof(TokenList));
+    TokenList *temp = arenaAlloc(sizeof(TokenList));
 
-    temp->start = temp->end = temp->next = NULL;
-    temp->type = TOK_NONE;
+    temp->start = temp->end = NULL;
+    temp->next = NULL;
 
     return temp;
 }
 
-void tokenListAppend(TokenList *list, char *start, char *end, TokType type){
+TokenList *tokenListAppend(TokenList *list, const char *start, const char *end){
     TokenList *item = tokenListInit();
 
     item->start = start;
     item->end = end;
-    item->type = type;
 
     if(list == NULL){
-        list = item;
-        return;
+        return item;
     }
 
-    for(TokenList *temp = list; temp->next != NULL; temp = temp->next){
-        temp->next = item;
-        return;
-    }
+    TokenList *temp = list;
+    while(temp->next != NULL)
+        temp = temp->next;
+    temp->next = item;
+
+    return list;
 }
 
 void tokenListPrint(TokenList *list){
-    
+    for(TokenList *tmp = list; tmp != NULL; tmp = tmp->next){
+        printf("-[\" %.*s \"]-", (int)(tmp->end - tmp->start), tmp->start);
+    }
+    printf("\n");
 }
 
-int isWhiteSpace(char *p){
+int isWhiteSpace(const char *p){
     switch(*p){
         case ' ':
         case '\t':
@@ -121,40 +131,50 @@ int isWhiteSpace(char *p){
     }
 }
 
-void skipWhiteSpace(char *p){
-    for(; isWhiteSpace(p), p != '\0'; p++);
+const char *skipWhiteSpace(const char *p){
+    for(; isWhiteSpace(p) && *p != '\0'; p++);
+    return p;
 }
 
-TokenList *tokenizeLine(const char *line){
+int isDigit(const char p){
+    return p >= '0' && p <= '9';
+}
+
+TokenList *tokenizeSrc(const char *line){
     TokenList *list = NULL;
 
-    char *p = line;
+    const char *p = line;
     while(*p != '\0'){
-        skipWhiteSpace(p);
+        p = skipWhiteSpace(p);
+        if(*p == '\0')
+            break;
 
-        char *start = p;
+        const char *start = p;
 
-        if(*start == '"')
-            for(; *p != '"', *p != '\0'; p++);
-        else
-            for(; !isWhiteSpace(p), *p != '\0'; p++);
-        
-        TokType type = TOK_WORD;
-        if(*start >= '0' && *start <= '9'){
-            type = TOK_NUM;
-        }
-        else if(*start == SYS_CHAR){
-            type = TOK_SYS_WORD;
-        }
-        else if(*start == '"'){
-            if(*p != '"'){
-                fprintf(stderr, "\x1b[1;31m[FATAL 0x%04X]\x1b[0m:\tUnterminated string in line \" %s \".", line);
+        for(; !isWhiteSpace(p) && (*p != '\0'); p++);
+
+        // special strings cases
+        if((*start == '.' && *(p-1) == '\"') && (p-start == 2)){
+            list = tokenListAppend(list, start, p);
+
+            p = skipWhiteSpace(p);
+            
+            // get the string to be
+            start = p;
+            for(; *p != '\"' && *p != '\0'; p++);
+
+            if(start == p){
+                fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tThere appears to be an unterminated print statement.\n", 0x0690);
                 exit(EXIT_FAILURE);
             }
-            type = TOK_STR;
-        }
 
-        tokenListAppend(list, start, p, type);
+            list = tokenListAppend(list, start, p);
+            p++;
+
+            continue;
+        }
+        
+        list = tokenListAppend(list, start, p);
     }
 
     return list;
@@ -162,129 +182,49 @@ TokenList *tokenizeLine(const char *line){
 
 
 int main(void){
+    arenaInit();
+
     printf("\x1b[1;31mFORTHISH\x1b[0m\nA FORTH-like language made to be as dead simple as I can think of making a language.\n");
     // main loop
     for(; printf("\n\x1b[34m>\x1b[0m "), fgets(line, sizeof(line), stdin);){
         // exit case
-        if(strcmp(line, "bye\n") == 0){
+        line[strcspn(line, "\n")] = '\0';
+        if(strcmp(line, "bye") == 0){
             break;
         }
 
-        // TODO: switch to just whitespace seperated tokenization
+        TokenList *list = tokenizeSrc(line);
 
-        // parser head
-        char *p = line;
-        
-        while(*p != '\0'){
-            switch(*p){
-                // skip whitespace
-                case ' ':
-                case '\t':
-                case '\n':
-                case '\r':
-                case '\v':{
-                    p++;
-                    break;
-                }
-                // catch numbers
-                case '0':
-                case '1':
-                case '2':
-                case '3':
-                case '4':
-                case '5':
-                case '6':
-                case '7':
-                case '8':
-                case '9':{
-                    dPush(atof(p));
-                    while(*p >= '0' && *p <= '9' || *p == '.')
-                        p++;
-                    break;
-                }
-                // arithmatic
-                case '+':{
-                    p++;
-                    if(*p == '+'){
-                        p++;
-                        dPush(dPop()+1);
-                        break;
-                    }
-                    double lhs = dPop();
-                    double rhs = dPop();
-                    dPush(lhs + rhs);
-                    break;
-                }
-                case '-':{
-                    p++;
-                    if(*p == '-'){
-                        p++;
-                        dPush(dPop()-1);
-                        break;
-                    }
-                    double lhs = dPop();
-                    double rhs = dPop();
-                    dPush(lhs - rhs);
-                    break;
-                }
-                case '*':{
-                    p++;
-                    double lhs = dPop();
-                    double rhs = dPop();
-                    if(*p == '*'){
-                        p++;
-                        dPush(pow(lhs, rhs));
-                        break;
-                    }
-                    dPush(lhs * rhs);
-                    break;
-                }
-                case '/':{
-                    p++;
-                    double lhs = dPop();
-                    double rhs = dPop();
-                    if(*p == '/'){
-                        p++;
-                        dPush(floor(lhs / rhs));
-                        break;
-                    }
-                    dPush(lhs / rhs);
-                    break;
-                }
-                // system utils
-                case '.':{
-                    p++;
-                    if(*p == 's'){
-                        p++;
-                        dStackPrint();
-                        break;
-                    }
-                    else if(*p == '"'){
-                        p++;    // skip the quote
-                        char *tmp = p;
-                        while(*tmp != '"' && *tmp != '\0')
-                            tmp++;
-                        
-                        printf("%.*s", (int)(tmp-p), p);
-                        p = ++tmp;
-                        break;
-                    }
-                    printf("%g", dPop());
-                    break;
-                }
-                default:{
-                    // attempt to handle the users input
+        tokenListPrint(list);
 
-                    // error case
-                    line[strcspn(line, "\n")] = '\0';
-                    fprintf(stderr, "\x1b[1;31m[FATAL 0x%04X]\x1b[0m:\tParser error, undefined character '%c'\n\t\tin line: \" %s \".\n", 0x0167, *p, line);
-                    p++;
-                    continue;
-                    break;
-                }
+        for(TokenList *curr = list; curr != NULL; curr = curr->next){
+            #define BUFF_LEN 256
+            char temp[BUFF_LEN] = {0};
+            size_t len = (curr->end-curr->start);
+
+            if(len >= BUFF_LEN){
+                fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tToken is longer than buffer length of (%d).\nToken contents: \" %.*s \"", 0x0670, BUFF_LEN, (int)len, curr->start);
+                exit(EXIT_FAILURE);
+            }
+
+            memcpy(temp, curr->start, len >= BUFF_LEN ? BUFF_LEN-1 : len);
+            #undef BUFF_LEN
+
+            char *p;
+            scell num = SIGNED strtoimax(temp, &p, 0);
+            
+            if(((p-temp) == (curr->end-curr->start)) && (p != temp)){   // seee if it's a number
+                printf("number happened: " P_SGN_ESC "\n", num);
+            }
+            else if(0){  // try to do a dictionary lookup
+
+            }
+            else{   // error for undefined word
+
             }
         }
     }
 
+    arenaDestroy();
     return EXIT_SUCCESS;
 }
