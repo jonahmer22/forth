@@ -6,6 +6,10 @@
 #include <inttypes.h>
 #include "arena/arena.h"
 
+// max token length
+
+#define MAX_TOKEN_LEN 256
+
 // input line
 
 #define LINE_SIZE 256
@@ -38,11 +42,17 @@ void dPush(cell d){
     dstack[dsp++] = d;
 }
 cell dPop(){
-    return dsp == 0 ? 0 : dstack[--dsp];
+    if(dsp <= 0){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack underflow.\n", 0x8005);
+        exit(EXIT_FAILURE);
+    }
+    return dstack[--dsp];
 }
 void dClear(){
     for(size_t i = 0; i < STACK_SIZE; i++)
         dstack[i] = 0;
+    
+    dsp = 0;
 }
 void dStackPrint(){
     printf("<%zu> ", dsp);
@@ -164,7 +174,11 @@ TokenList *tokenizeSrc(const char *line){
             for(; *p != '\"' && *p != '\0'; p++);
 
             if(start == p){
-                fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tThere appears to be an unterminated print statement.\n", 0x0690);
+                continue;
+            }
+
+            if(*p == '\0'){
+                fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tPossibly unterminated string.\n\t\tLine contents: \" %.*s \".\n", 0x5321, (int)(p-start), start);
                 exit(EXIT_FAILURE);
             }
 
@@ -180,9 +194,258 @@ TokenList *tokenizeSrc(const char *line){
     return list;
 }
 
+// dictionary bs
+
+typedef enum WordType{
+    WORD_BUILTIN = 0,
+    WORD_USERDEF
+} WordType;
+
+typedef struct Entry{
+    char name[MAX_TOKEN_LEN];
+    size_t nLen;
+
+    // marks whether or not it's a builtin or user defined
+    WordType type;
+
+    // for builtins they should just point to a C function I guess
+    void (*behavior)();
+
+    // for user defined words, this should be compiled
+    // TODO: idk what the fuck to do here, I need to implement a basic VM for this first?
+
+    // immediate, hidden, compileonly, etc. later
+    uint8_t flags;
+
+    struct Entry *prev;
+} Entry;
+
+Entry *entryInit(const char *name, size_t nLen, WordType type, void (*behavior)(), uint8_t flags){
+    Entry *temp = arenaAlloc(sizeof(Entry));
+
+    memcpy(temp->name, name, nLen);
+    temp->nLen = nLen;
+
+    temp->type = type;
+
+    temp->behavior = behavior;
+
+    // TODO: whenever I get to this compiled words stuff
+
+    temp->flags = flags;
+
+    temp->prev = NULL;  // this should be set by the dictionary appending function
+
+    return temp;
+}
+
+typedef struct Dictionary{
+    Entry *head;
+
+    size_t len;
+} Dictionary;
+
+Dictionary *dictionaryInit(){
+    Dictionary *temp = arenaAlloc(sizeof(Dictionary));
+
+    temp->head = NULL;
+    temp->len = 0;
+
+    return temp;
+}
+
+void dictionaryAdd(Dictionary *dict, Entry *entry){
+    entry->prev = dict->head;
+    
+    dict->head = entry;
+    dict->len++;
+}
+
+Entry *dictionaryLookup(Dictionary *dict, const char *start, size_t nLen){
+    for(Entry *temp = dict->head; temp != NULL; temp = temp->prev){
+        if((memcmp(temp->name, start, temp->nLen) == 0) && (nLen == temp->nLen)){
+            // we found it
+            return temp;
+        }
+    }
+    return NULL;
+}
+
+// builtins functions
+
+void dot(){     // .
+    printf(P_SGN_ESC, dPop());
+}
+void dotS(){    // .s
+    dStackPrint();
+}
+void dup(){     // dup
+    cell temp = dPop();
+    dPush(temp); dPush(temp);
+}
+void drop(){    // drop
+    dPop();
+}
+void swap(){    // swap
+    if(dsp < 2){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack underflow while trying to swap.\n", 0x8318);
+        exit(EXIT_FAILURE);
+    }
+    cell temp = dstack[dsp-2];
+    dstack[dsp-2] = dstack[dsp-1];
+    dstack[dsp-1] = temp;
+}
+void over(){    // over
+    if(dsp < 2){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack underflow while trying to over.\n", 0x8312);
+        exit(EXIT_FAILURE);
+    }
+    cell temp = dstack[dsp-2];
+    dPush(temp);
+}
+void rot(){     // rot
+    if(dsp < 3){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack underflow while trying to rot.\n", 0x8332);
+        exit(EXIT_FAILURE);
+    }
+    cell temp = dstack[dsp-3];
+    dstack[dsp-3] = dstack[dsp-2];
+    dstack[dsp-2] = dstack[dsp-1];
+    dstack[dsp-1] = temp;
+}
+void nip(){     // nip
+    if(dsp < 2){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack underflow while trying to nip.\n", 0x8132);
+        exit(EXIT_FAILURE);
+    }
+    swap(); dPop();
+}
+void tuck(){    // tuck
+    if(dsp < 2){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack underflow while trying to tuck.\n", 0x8732);
+        exit(EXIT_FAILURE);
+    }
+    swap();
+    cell temp = dstack[dsp-2];
+    dPush(temp);
+}
+void twodup(){  // 2dup
+    if(dsp < 2){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack underflow while trying to 2dup.\n", 0x8534);
+        exit(EXIT_FAILURE);
+    }
+    cell temp1 = dstack[dsp-2];
+    cell temp2 = dstack[dsp-1];
+    dPush(temp1); dPush(temp2);
+}
+void twodrop(){ // 2drop
+    if(dsp < 2){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack underflow while trying to 2drop.\n", 0x8514);
+        exit(EXIT_FAILURE);
+    }
+    drop(); drop();
+}
+void depth(){   // depth
+    dPush(UNSIGNED dsp);
+}
+void clear(){   // clear
+    dClear();
+}
+void fadd(){     // +
+    dPush(dPop() + dPop());
+}
+void fsub(){     // -
+    cell rhs = dPop();
+    cell lhs = dPop();
+    dPush(lhs - rhs);
+}
+void fmul(){     // *
+    dPush(dPop() * dPop());
+}
+void fdiv(){     // /
+    cell rhs = dPop();
+    cell lhs = dPop();
+    dPush(lhs / rhs);
+}
 
 int main(void){
     arenaInit();
+
+    // init the dictionary
+    Dictionary *dict = dictionaryInit();
+
+    // add builtins to the dictionary
+    {   // this is in a block just to mark a special area to do it
+        Entry *temp = NULL;
+
+        // (.)
+        temp = entryInit(".", 1, WORD_BUILTIN, dot, 0);
+        dictionaryAdd(dict, temp);
+
+        // (.s)
+        temp = entryInit(".s", 2, WORD_BUILTIN, dotS, 0);
+        dictionaryAdd(dict, temp);
+
+        // (dup)
+        temp = entryInit("dup", 3, WORD_BUILTIN, dup, 0);
+        dictionaryAdd(dict, temp);
+
+        // (drop)
+        temp = entryInit("drop", 4, WORD_BUILTIN, drop, 0);
+        dictionaryAdd(dict, temp);
+
+        // (swap)
+        temp = entryInit("swap", 4, WORD_BUILTIN, swap, 0);
+        dictionaryAdd(dict, temp);
+
+        // {over}
+        temp = entryInit("over", 4, WORD_BUILTIN, over, 0);
+        dictionaryAdd(dict, temp);
+
+        // (rot)
+        temp = entryInit("rot", 3, WORD_BUILTIN, rot, 0);
+        dictionaryAdd(dict, temp);
+
+        // {nip}
+        temp = entryInit("nip", 3, WORD_BUILTIN, nip, 0);
+        dictionaryAdd(dict, temp);
+
+        // (tuck)
+        temp = entryInit("tuck", 4, WORD_BUILTIN, tuck, 0);
+        dictionaryAdd(dict, temp);
+
+        // (2dup)
+        temp = entryInit("2dup", 4, WORD_BUILTIN, twodup, 0);
+        dictionaryAdd(dict, temp);
+
+        // (2drop)
+        temp = entryInit("2drop", 5, WORD_BUILTIN, twodrop, 0);
+        dictionaryAdd(dict, temp);
+
+        // (depth)
+        temp = entryInit("depth", 5, WORD_BUILTIN, depth, 0);
+        dictionaryAdd(dict, temp);
+
+        // (clear)
+        temp = entryInit("clear", 5, WORD_BUILTIN, clear, 0);
+        dictionaryAdd(dict, temp);
+
+        // (+)
+        temp = entryInit("+", 1, WORD_BUILTIN, fadd, 0);
+        dictionaryAdd(dict, temp);
+
+        // (-)
+        temp = entryInit("-", 1, WORD_BUILTIN, fsub, 0);
+        dictionaryAdd(dict, temp);
+
+        // (*)
+        temp = entryInit("*", 1, WORD_BUILTIN, fmul, 0);
+        dictionaryAdd(dict, temp);
+
+        // (/)
+        temp = entryInit("/", 1, WORD_BUILTIN, fdiv, 0);
+        dictionaryAdd(dict, temp);
+    }
 
     printf("\x1b[1;31mFORTHISH\x1b[0m\nA FORTH-like language made to be as dead simple as I can think of making a language.\n");
     // main loop
@@ -198,29 +461,40 @@ int main(void){
         tokenListPrint(list);
 
         for(TokenList *curr = list; curr != NULL; curr = curr->next){
-            #define BUFF_LEN 256
-            char temp[BUFF_LEN] = {0};
+            char temp[MAX_TOKEN_LEN] = {0};
             size_t len = (curr->end-curr->start);
 
-            if(len >= BUFF_LEN){
-                fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tToken is longer than buffer length of (%d).\nToken contents: \" %.*s \"", 0x0670, BUFF_LEN, (int)len, curr->start);
+            if(len >= MAX_TOKEN_LEN){
+                fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tToken is longer than buffer length of (%d).\nToken contents: \" %.*s \"", 0x0670, MAX_TOKEN_LEN, (int)len, curr->start);
                 exit(EXIT_FAILURE);
             }
 
-            memcpy(temp, curr->start, len >= BUFF_LEN ? BUFF_LEN-1 : len);
-            #undef BUFF_LEN
+            memcpy(temp, curr->start, len >= MAX_TOKEN_LEN ? MAX_TOKEN_LEN-1 : len);
 
             char *p;
             scell num = SIGNED strtoimax(temp, &p, 0);
+
+            // spoilers
+            Entry *word;
             
             if(((p-temp) == (curr->end-curr->start)) && (p != temp)){   // seee if it's a number
-                printf("number happened: " P_SGN_ESC "\n", num);
+                // we have a number, all we have to do is put it on the stack as unsigned
+                dPush(UNSIGNED num);
+                continue;
             }
-            else if(0){  // try to do a dictionary lookup
+            else if((word = dictionaryLookup(dict, curr->start, len)) != NULL){  // try to do a dictionary lookup
+                // we have an entry in the dictionary
 
+                if(word->type == WORD_BUILTIN){
+                    word->behavior();
+                }
+
+                // idk if this is still relevant
+                // TODO: execute the entry and add to the return stack
             }
             else{   // error for undefined word
-
+                // TODO: add an error message
+                fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tUnidentified word.\n\t\tWord: \" %.*s \"\n", 0x1018, (int)len, curr->start);
             }
         }
     }
