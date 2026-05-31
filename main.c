@@ -209,7 +209,7 @@ typedef struct Entry{
     WordType type;
 
     // for builtins they should just point to a C function I guess
-    void (*behavior)();
+    void (*behavior)(void *);
 
     // for user defined words, this should be compiled
     // TODO: idk what the fuck to do here, I need to implement a basic VM for this first?
@@ -220,7 +220,7 @@ typedef struct Entry{
     struct Entry *prev;
 } Entry;
 
-Entry *entryInit(const char *name, size_t nLen, WordType type, void (*behavior)(), uint8_t flags){
+Entry *entryInit(const char *name, size_t nLen, WordType type, void (*behavior)(void *), uint8_t flags){
     Entry *temp = arenaAlloc(sizeof(Entry));
 
     memcpy(temp->name, name, nLen);
@@ -273,20 +273,23 @@ Entry *dictionaryLookup(Dictionary *dict, const char *start, size_t nLen){
 
 // builtins functions
 
-void dot(){     // .
+void dot(void *na){     // .
     printf(P_SGN_ESC, dPop());
 }
-void dotS(){    // .s
+void dotS(void *na){    // .s
     dStackPrint();
 }
-void dup(){     // dup
+void dotQuote(void *na){// ."
+    
+}
+void dup(void *na){     // dup
     cell temp = dPop();
     dPush(temp); dPush(temp);
 }
-void drop(){    // drop
+void drop(void *na){    // drop
     dPop();
 }
-void swap(){    // swap
+void swap(void *na){    // swap
     if(dsp < 2){
         fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack underflow while trying to swap.\n", 0x8318);
         exit(EXIT_FAILURE);
@@ -295,7 +298,7 @@ void swap(){    // swap
     dstack[dsp-2] = dstack[dsp-1];
     dstack[dsp-1] = temp;
 }
-void over(){    // over
+void over(void *na){    // over
     if(dsp < 2){
         fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack underflow while trying to over.\n", 0x8312);
         exit(EXIT_FAILURE);
@@ -303,7 +306,7 @@ void over(){    // over
     cell temp = dstack[dsp-2];
     dPush(temp);
 }
-void rot(){     // rot
+void rot(void *na){     // rot
     if(dsp < 3){
         fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack underflow while trying to rot.\n", 0x8332);
         exit(EXIT_FAILURE);
@@ -313,23 +316,23 @@ void rot(){     // rot
     dstack[dsp-2] = dstack[dsp-1];
     dstack[dsp-1] = temp;
 }
-void nip(){     // nip
+void nip(void *na){     // nip
     if(dsp < 2){
         fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack underflow while trying to nip.\n", 0x8132);
         exit(EXIT_FAILURE);
     }
-    swap(); dPop();
+    swap(NULL); dPop();
 }
-void tuck(){    // tuck
+void tuck(void *na){    // tuck
     if(dsp < 2){
         fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack underflow while trying to tuck.\n", 0x8732);
         exit(EXIT_FAILURE);
     }
-    swap();
+    swap(NULL);
     cell temp = dstack[dsp-2];
     dPush(temp);
 }
-void twodup(){  // 2dup
+void twodup(void *na){  // 2dup
     if(dsp < 2){
         fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack underflow while trying to 2dup.\n", 0x8534);
         exit(EXIT_FAILURE);
@@ -338,40 +341,168 @@ void twodup(){  // 2dup
     cell temp2 = dstack[dsp-1];
     dPush(temp1); dPush(temp2);
 }
-void twodrop(){ // 2drop
+void twodrop(void *na){ // 2drop
     if(dsp < 2){
         fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tData stack underflow while trying to 2drop.\n", 0x8514);
         exit(EXIT_FAILURE);
     }
-    drop(); drop();
+    drop(NULL); drop(NULL);
 }
-void depth(){   // depth
+void depth(void *na){   // depth
     dPush(UNSIGNED dsp);
 }
-void clear(){   // clear
+void clear(void *na){   // clear
     dClear();
 }
-void fadd(){     // +
+void mod(void *na){     // mod
+    scell rhs = SIGNED dPop();
+    scell lhs = SIGNED dPop();
+    if(rhs == 0)    // TODO: should probably have an error message for division by 0, also should update all other places this occurs
+        return;
+    dPush(UNSIGNED (lhs % rhs));
+}
+void slashmod(void *na){// /mod
+    scell rhs = SIGNED dPop();
+    scell lhs = SIGNED dPop();
+    if(rhs == 0)
+        return;
+    dPush(UNSIGNED (lhs % rhs));
+    dPush(UNSIGNED (lhs / rhs));
+}
+void negate(void *na){  // negate
+    dPush(-(SIGNED dPop()));
+}
+void fsabs(void *na){   // abs
+    scell temp = SIGNED dPop();
+    dPush(UNSIGNED (labs(temp)));
+}
+void oneplus(void *na){ // 1+
+    dPush(dPop()+1);
+}
+void onemin(void *na){  // 1-
+    dPush(dPop()-1);
+}
+void twotimes(void *na){// 2*
+    dPush(UNSIGNED ((SIGNED dPop())*2));
+}
+void twodiv(void *na){  // 2/
+    dPush(UNSIGNED ((SIGNED dPop())/2));
+}
+void fadd(void *na){     // +
     dPush(dPop() + dPop());
 }
-void fsub(){     // -
+void fsub(void *na){     // -
     cell rhs = dPop();
     cell lhs = dPop();
     dPush(lhs - rhs);
 }
-void fmul(){     // *
-    dPush(dPop() * dPop());
+void fmul(void *na){     // *
+    dPush(UNSIGNED (SIGNED dPop() * SIGNED dPop()));
 }
-void fdiv(){     // /
+void fdiv(void *na){     // /
+    scell rhs = SIGNED dPop();
+    scell lhs = SIGNED dPop();
+    if(rhs == 0)
+        return;
+    dPush(UNSIGNED (lhs / rhs));
+}
+void eq(void *na){      // =
     cell rhs = dPop();
     cell lhs = dPop();
-    dPush(lhs / rhs);
+    dPush(UNSIGNED (lhs == rhs ? -1 : 0));
+}
+void neq(void *na){     // <>
+    cell rhs = dPop();
+    cell lhs = dPop();
+    dPush(UNSIGNED (lhs != rhs ? -1 : 0));
+}
+void lt(void *na){     // <
+    scell rhs = SIGNED dPop();
+    scell lhs = SIGNED dPop();
+    dPush(UNSIGNED (lhs < rhs ? -1 : 0));
+}
+void gt(void *na){     // >
+    scell rhs = SIGNED dPop();
+    scell lhs = SIGNED dPop();
+    dPush(UNSIGNED (lhs > rhs ? -1 : 0));
+}
+void lte(void *na){     // <=
+    scell rhs = SIGNED dPop();
+    scell lhs = SIGNED dPop();
+    dPush(UNSIGNED (lhs <= rhs ? -1 : 0));
+}
+void gte(void *na){     // >=
+    scell rhs = SIGNED dPop();
+    scell lhs = SIGNED dPop();
+    dPush(UNSIGNED (lhs >= rhs ? -1 : 0));
+}
+void zeq(void *na){     // 0=
+    scell temp = SIGNED dPop();
+    dPush(UNSIGNED (temp == 0 ? -1 : 0));
+}
+void zlt(void *na){     // 0<
+    scell temp = SIGNED dPop();
+    dPush(UNSIGNED (temp < 0 ? -1 : 0));
+}
+void zgt(void *na){     // 0>
+    scell temp = SIGNED dPop();
+    dPush(UNSIGNED (temp > 0 ? -1 : 0));
+}
+void and(void *na){     // and
+    dPush(dPop() & dPop());
+}
+void or(void *na){      // or
+    dPush(dPop() | dPop());
+}
+void xor(void *na){     // xor
+    dPush(dPop() ^ dPop());
+}
+void invert(void *na){  // invert
+    dPush(~dPop());
+}
+void lshift(void *na){  // lshift
+    cell amt = dPop();
+    cell val = dPop();
+    dPush(val<<amt);
+}
+void rshift(void *na){  // rshift
+    cell amt = dPop();
+    cell val = dPop();
+    dPush(val>>amt);
+}
+void cr(void *na){      // cr
+    putc('\n', stdout);
+}
+void space(void *na){   // space
+    putc(' ', stdout);
+}
+void spaces(void *na){  // spaces
+    cell amt = dPop();
+    for(uintptr_t i = 0; i < amt; i++)
+        space(NULL);
+}
+void emit(void *na){    // emit
+    cell val = dPop();
+    putc(val, stdout);
+}
+void unsigndot(void *na){   // u.
+    printf(P_UNS_ESC, dPop());
+}
+void words(void *na){   // words
+    Dictionary *dict = (Dictionary *)na;
+    for(Entry *temp = dict->head; temp != NULL; temp = temp->prev){
+        printf("%s ", temp->name);
+    }
+    putc('\n', stdout);
+}
+void bye(void *na){     // bye
+    exit(EXIT_SUCCESS);
 }
 
 int main(void){
     arenaInit();
 
-    // init the dictionary
+    // init the dictionaryxx
     Dictionary *dict = dictionaryInit();
 
     // add builtins to the dictionary
@@ -430,6 +561,38 @@ int main(void){
         temp = entryInit("clear", 5, WORD_BUILTIN, clear, 0);
         dictionaryAdd(dict, temp);
 
+        // (mod)
+        temp = entryInit("mod", 3, WORD_BUILTIN, mod, 0);
+        dictionaryAdd(dict, temp);
+
+        // /mod
+        temp = entryInit("/mod", 4, WORD_BUILTIN, slashmod, 0);
+        dictionaryAdd(dict, temp);
+
+        // negate
+        temp = entryInit("negate", 6, WORD_BUILTIN, negate, 0);
+        dictionaryAdd(dict, temp);
+
+        // abs
+        temp = entryInit("abs", 3, WORD_BUILTIN, fsabs, 0);
+        dictionaryAdd(dict, temp);
+
+        // 1+
+        temp = entryInit("1+", 2, WORD_BUILTIN, oneplus, 0);
+        dictionaryAdd(dict, temp);
+
+        // 1-
+        temp = entryInit("1-", 2, WORD_BUILTIN, onemin, 0);
+        dictionaryAdd(dict, temp);
+
+        // 2*
+        temp = entryInit("2*", 2, WORD_BUILTIN, twotimes, 0);
+        dictionaryAdd(dict, temp);
+
+        // 2/
+        temp = entryInit("2/", 2, WORD_BUILTIN, twodiv, 0);
+        dictionaryAdd(dict, temp);
+
         // (+)
         temp = entryInit("+", 1, WORD_BUILTIN, fadd, 0);
         dictionaryAdd(dict, temp);
@@ -445,6 +608,94 @@ int main(void){
         // (/)
         temp = entryInit("/", 1, WORD_BUILTIN, fdiv, 0);
         dictionaryAdd(dict, temp);
+
+        // (=)
+        temp = entryInit("=", 1, WORD_BUILTIN, eq, 0);
+        dictionaryAdd(dict, temp);
+
+        // (<>)
+        temp = entryInit("<>", 2, WORD_BUILTIN, neq, 0);
+        dictionaryAdd(dict, temp);
+
+        // (<)
+        temp = entryInit("<", 1, WORD_BUILTIN, lt, 0);
+        dictionaryAdd(dict, temp);
+
+        // (>)
+        temp = entryInit(">", 1, WORD_BUILTIN, gt, 0);
+        dictionaryAdd(dict, temp);
+
+        // (<=)
+        temp = entryInit("<=", 2, WORD_BUILTIN, lte, 0);
+        dictionaryAdd(dict, temp);
+
+        // (>=)
+        temp = entryInit(">=", 2, WORD_BUILTIN, gte, 0);
+        dictionaryAdd(dict, temp);
+
+        // (0=)
+        temp = entryInit("0=", 2, WORD_BUILTIN, zeq, 0);
+        dictionaryAdd(dict, temp);
+
+        // (0<)
+        temp = entryInit("0<", 2, WORD_BUILTIN, zlt, 0);
+        dictionaryAdd(dict, temp);
+
+        // (0>)
+        temp = entryInit("0>", 2, WORD_BUILTIN, zgt, 0);
+        dictionaryAdd(dict, temp);
+
+        // (and)
+        temp = entryInit("and", 3, WORD_BUILTIN, and, 0);
+        dictionaryAdd(dict, temp);
+
+        // (or)
+        temp = entryInit("or", 2, WORD_BUILTIN, or, 0);
+        dictionaryAdd(dict, temp);
+
+        // (xor)
+        temp = entryInit("xor", 3, WORD_BUILTIN, xor, 0);
+        dictionaryAdd(dict, temp);
+
+        // (invert)
+        temp = entryInit("invert", 6, WORD_BUILTIN, invert, 0);
+        dictionaryAdd(dict, temp);
+
+        // (lshift)
+        temp = entryInit("lshift", 6, WORD_BUILTIN, lshift, 0);
+        dictionaryAdd(dict, temp);
+
+        // (rshift)
+        temp = entryInit("rshift", 6, WORD_BUILTIN, rshift, 0);
+        dictionaryAdd(dict, temp);
+
+        // (cr)
+        temp = entryInit("cr", 2, WORD_BUILTIN, cr, 0);
+        dictionaryAdd(dict, temp);
+
+        // (space)
+        temp = entryInit("space", 5, WORD_BUILTIN, space, 0);
+        dictionaryAdd(dict, temp);
+
+        // (spaces)
+        temp = entryInit("spaces", 6, WORD_BUILTIN, spaces, 0);
+        dictionaryAdd(dict, temp);
+
+        // (emit)
+        temp = entryInit("emit", 4, WORD_BUILTIN, emit, 0);
+        dictionaryAdd(dict, temp);
+
+        // (u.)
+        temp = entryInit("u.", 2, WORD_BUILTIN, unsigndot, 0);
+        dictionaryAdd(dict, temp);
+
+        // (words)
+        temp = entryInit("words", 5, WORD_BUILTIN, words, 0);
+        dictionaryAdd(dict, temp);
+
+        // (bye)
+        temp = entryInit("bye", 3, WORD_BUILTIN, bye, 0);
+        dictionaryAdd(dict, temp);
     }
 
     printf("\x1b[1;31mFORTHISH\x1b[0m\nA FORTH-like language made to be as dead simple as I can think of making a language.\n");
@@ -458,7 +709,7 @@ int main(void){
 
         TokenList *list = tokenizeSrc(line);
 
-        tokenListPrint(list);
+        // tokenListPrint(list);
 
         for(TokenList *curr = list; curr != NULL; curr = curr->next){
             char temp[MAX_TOKEN_LEN] = {0};
@@ -486,7 +737,7 @@ int main(void){
                 // we have an entry in the dictionary
 
                 if(word->type == WORD_BUILTIN){
-                    word->behavior();
+                    word->behavior(dict);
                 }
 
                 // idk if this is still relevant
