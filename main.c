@@ -318,7 +318,7 @@ State *stateInit(Dictionary *dict, TokenList* list, cell *dstack, size_t *dsp, u
         state->rstack = rstack;
         state->rsp = rsp;
 
-        state->compileMode = -1;
+        state->compileMode = 0;
 
         state->status = 0;
     }
