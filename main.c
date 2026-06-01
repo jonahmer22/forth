@@ -75,6 +75,10 @@ void rPush(uint64_t r){
     rstack[rsp++] = r;
 }
 uint64_t rPop(){
+    if(rsp <= 0){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\Return stack underflow.\n", 0x8009);
+        exit(EXIT_FAILURE);
+    }
     return rsp == 0 ? 0 : rstack[--rsp];
 }
 void rClear(){
@@ -169,6 +173,14 @@ TokenList *tokenizeSrc(const char *line){
             list = tokenListAppend(list, start, p);
 
             p = skipWhiteSpace(p);
+
+            if(*p == '"'){
+                tokenListAppend(list, start, start);
+
+                p++;
+
+                continue;
+            }
             
             // get the string to be
             start = p;
@@ -225,6 +237,7 @@ Entry *entryInit(const char *name, size_t nLen, WordType type, void (*behavior)(
     Entry *temp = arenaAlloc(sizeof(Entry));
 
     memcpy(temp->name, name, nLen);
+    temp->name[nLen] = '\0';
     temp->nLen = nLen;
 
     temp->type = type;
@@ -324,6 +337,10 @@ void dotS(void *na){    // .s
 void dotQuote(void *na){// ."
     State *state = ((State *)na);
 
+    if(state->curr->next == NULL){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tPrint statement missing a string.\n", 0x0743);
+        exit(EXIT_FAILURE);
+    }
     const char *start = state->curr->next->start;
     const char *end = state->curr->next->end;
 
@@ -406,15 +423,41 @@ void clear(void *na){   // clear
 void mod(void *na){     // mod
     scell rhs = SIGNED dPop();
     scell lhs = SIGNED dPop();
-    if(rhs == 0)    // TODO: should probably have an error message for division by 0, also should update all other places this occurs
+
+    if(rhs == 0){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tAttempting to divide by zero.\n\t\tStack has been reset.\n", 0x0610);
+
+        // consume all the tokens so that execution stops
+        State *state = ((State *)na);
+        for(; state->curr->next != NULL; state->curr = state->curr->next);
+
+        // clear the stacks
+        dClear();
+        rClear();
+
         return;
+    }
+
     dPush(UNSIGNED (lhs % rhs));
 }
 void slashmod(void *na){// /mod
     scell rhs = SIGNED dPop();
     scell lhs = SIGNED dPop();
-    if(rhs == 0)
+    
+    if(rhs == 0){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tAttempting to divide by zero.\n\t\tStack has been reset.\n", 0x0610);
+
+        // consume all the tokens so that execution stops
+        State *state = ((State *)na);
+        for(; state->curr->next != NULL; state->curr = state->curr->next);
+
+        // clear the stacks
+        dClear();
+        rClear();
+
         return;
+    }
+
     dPush(UNSIGNED (lhs % rhs));
     dPush(UNSIGNED (lhs / rhs));
 }
@@ -451,8 +494,21 @@ void fmul(void *na){     // *
 void fdiv(void *na){     // /
     scell rhs = SIGNED dPop();
     scell lhs = SIGNED dPop();
-    if(rhs == 0)
+    
+    if(rhs == 0){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tAttempting to divide by zero.\n\t\tStack has been reset.\n", 0x0610);
+
+        // consume all the tokens so that execution stops
+        State *state = ((State *)na);
+        for(; state->curr->next != NULL; state->curr = state->curr->next);
+
+        // clear the stacks
+        dClear();
+        rClear();
+
         return;
+    }
+
     dPush(UNSIGNED (lhs / rhs));
 }
 void eq(void *na){      // =
@@ -512,11 +568,17 @@ void invert(void *na){  // invert
 void lshift(void *na){  // lshift
     cell amt = dPop();
     cell val = dPop();
+    if(amt > (sizeof(cell)*8)){
+        amt = (sizeof(cell)*8);
+    }
     dPush(val<<amt);
 }
 void rshift(void *na){  // rshift
     cell amt = dPop();
     cell val = dPop();
+    if(amt > (sizeof(cell)*8)){
+        amt = (sizeof(cell)*8);
+    }
     dPush(val>>amt);
 }
 void cr(void *na){      // cr
