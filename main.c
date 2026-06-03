@@ -76,7 +76,7 @@ void rPush(uint64_t r){
 }
 uint64_t rPop(){
     if(rsp <= 0){
-        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\Return stack underflow.\n", 0x8009);
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tReturn stack underflow.\n", 0x8009);
         exit(EXIT_FAILURE);
     }
     return rsp == 0 ? 0 : rstack[--rsp];
@@ -207,6 +207,60 @@ TokenList *tokenizeSrc(const char *line){
     return list;
 }
 
+// compiling stuff
+
+typedef struct Entry Entry;
+
+#define BASE_SIZE 8
+
+typedef enum ActionType{
+    ACT_NUM = 0,
+    ACT_PRINT,
+    ACT_WORD,
+    ACT_BRANCH,
+    ACT_EOF
+} ActionType;
+
+typedef struct Action{
+    ActionType type;
+
+    const cell num; // also used for storing encoded branch offsets
+    const char *str;
+    Entry *word;
+} Action;
+
+typedef struct Body{
+    Action **actions;
+
+    size_t used;
+    size_t cap;
+} Body;
+
+Body *bodyInit(){
+    Body *body = malloc(sizeof(Body));
+
+    body->actions = malloc(sizeof(Action)*BASE_SIZE);
+    body->cap = body->used = 0;
+
+    return body;
+}
+
+void bodyEnsureSize(Body *body, size_t size){
+    if(body->cap < size){
+        for(; body->cap < size; body->cap <<= 1);
+
+        body->actions = realloc(body->actions, sizeof(Action)*size);
+
+        body->cap = size;
+    }
+}
+
+void bodyAppend(Body *body, Action *action){
+    bodyEnsureSize(body, body->used + 1);
+
+    body->actions[body->used++] = action;
+}
+
 // dictionary bs
 
 typedef enum WordType{
@@ -225,7 +279,9 @@ typedef struct Entry{
     void (*behavior)(void *);
 
     // for user defined words, this should be compiled
-    // TODO: idk what the fuck to do here, I need to implement a basic VM for this first?
+    // idk what the fuck to do here, I need to implement a basic VM for this first?
+    // apparently the answer is this
+    Body *body;
 
     // immediate, hidden, compileonly, etc. later
     uint8_t flags;
@@ -233,7 +289,7 @@ typedef struct Entry{
     struct Entry *prev;
 } Entry;
 
-Entry *entryInit(const char *name, size_t nLen, WordType type, void (*behavior)(void *), uint8_t flags){
+Entry *entryInit(const char *name, size_t nLen, WordType type, void (*behavior)(void *), uint8_t flags, Body *body){
     Entry *temp = arenaAlloc(sizeof(Entry));
 
     memcpy(temp->name, name, nLen);
@@ -244,7 +300,7 @@ Entry *entryInit(const char *name, size_t nLen, WordType type, void (*behavior)(
 
     temp->behavior = behavior;
 
-    // TODO: whenever I get to this compiled words stuff
+    temp->body = body;
 
     temp->flags = flags;
 
@@ -290,6 +346,9 @@ Entry *dictionaryLookup(Dictionary *dict, const char *start, size_t nLen){
 typedef struct State{
     Dictionary *dict;
 
+    Entry *compiling;   // the word that is currently being compiled
+    Body *compBody;     // the body of the word that is currently being compiled
+
     TokenList *list;
     TokenList *curr;
 
@@ -309,6 +368,9 @@ State *stateInit(Dictionary *dict, TokenList* list, cell *dstack, size_t *dsp, u
 
     {
         state->dict = dict;
+
+        state->compiling = NULL;
+        state->compBody = NULL;
 
         state->list = state->curr = list;
 
@@ -609,6 +671,66 @@ void words(void *na){   // words
 void bye(void *na){     // bye
     exit(EXIT_SUCCESS);
 }
+void runUserWord(void *na){
+    // TODO: should execute a user word based on the name curr (do a dict search then execute the body)
+    State *state = (State *)na;
+
+    // find our word
+    Entry *word = dictionaryLookup(state->dict, state->curr->start, (size_t)(state->curr->end-state->curr->start));
+
+    // walk the actions in the body until ACT_EOF
+    // TODO: a good idea for branching is to use a scell to encode the offset and then subtract that from any index counter used to walk the list
+
+}
+void userword(void *na){// : and ;
+    State *state = (State *)na;
+
+    // move the head token past ':'
+    state->curr = state->curr->next;
+
+    // setup vars
+    state->compileMode = 1;
+    char name[MAX_TOKEN_LEN] = {0};
+    size_t len = (int)(state->curr->end-state->curr->start);
+    Body *body = bodyInit();
+
+    // TODO: should check the name exists and is not just ';' which should be a soft error
+    // set the name
+    memcpy(name, state->curr->start, len);
+    state->curr = state->curr->next;    // move current token past the name
+
+    printf("name: %s\n", name);
+
+    printf("body: ");
+    while(*(state->curr->start) != ';'){
+        TokenList *curr = state->curr;
+        printf("%.*s ", (int)(curr->end-curr->start), curr->start);
+
+        // TODO: find out whether it's a number, then word (handle specials like string etc)
+        char *p;
+        scell num = SIGNED strtoimax(curr->start, &p, 0);
+
+        // spoilers
+        Entry *word;
+        
+        if(((p-curr->start) == (len)) && (p != curr->start)){   // seee if it's a number
+            // we have a number, all we have to do is put it on the stack as unsigned
+            
+            // TODO: make an action that is just a number and append it
+        }
+        else if((word = dictionaryLookup(state->dict, curr->start, len)) != NULL){  // try to do a dictionary lookup
+            // we have an entry in the dictionary
+            
+            // make an action with a pointer to the entry (&word) then append
+        }
+
+        curr = curr->next;
+    }
+    // TODO: add a ACT_EOF to end the word
+    puts("");
+
+    dictionaryAdd(state->dict, entryInit(name, len, WORD_USERDEF, runUserWord, 0, body));
+}
 
 int main(void){
     arenaInit();
@@ -621,195 +743,199 @@ int main(void){
         Entry *temp = NULL;
 
         // (.)
-        temp = entryInit(".", 1, WORD_BUILTIN, dot, 0);
+        temp = entryInit(".", 1, WORD_BUILTIN, dot, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (.s)
-        temp = entryInit(".s", 2, WORD_BUILTIN, dotS, 0);
+        temp = entryInit(".s", 2, WORD_BUILTIN, dotS, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (.")
-        temp = entryInit(".\"", 2, WORD_BUILTIN, dotQuote, 0);
+        temp = entryInit(".\"", 2, WORD_BUILTIN, dotQuote, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (dup)
-        temp = entryInit("dup", 3, WORD_BUILTIN, dup, 0);
+        temp = entryInit("dup", 3, WORD_BUILTIN, dup, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (drop)
-        temp = entryInit("drop", 4, WORD_BUILTIN, drop, 0);
+        temp = entryInit("drop", 4, WORD_BUILTIN, drop, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (swap)
-        temp = entryInit("swap", 4, WORD_BUILTIN, swap, 0);
+        temp = entryInit("swap", 4, WORD_BUILTIN, swap, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // {over}
-        temp = entryInit("over", 4, WORD_BUILTIN, over, 0);
+        temp = entryInit("over", 4, WORD_BUILTIN, over, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (rot)
-        temp = entryInit("rot", 3, WORD_BUILTIN, rot, 0);
+        temp = entryInit("rot", 3, WORD_BUILTIN, rot, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // {nip}
-        temp = entryInit("nip", 3, WORD_BUILTIN, nip, 0);
+        temp = entryInit("nip", 3, WORD_BUILTIN, nip, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (tuck)
-        temp = entryInit("tuck", 4, WORD_BUILTIN, tuck, 0);
+        temp = entryInit("tuck", 4, WORD_BUILTIN, tuck, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (2dup)
-        temp = entryInit("2dup", 4, WORD_BUILTIN, twodup, 0);
+        temp = entryInit("2dup", 4, WORD_BUILTIN, twodup, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (2drop)
-        temp = entryInit("2drop", 5, WORD_BUILTIN, twodrop, 0);
+        temp = entryInit("2drop", 5, WORD_BUILTIN, twodrop, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (depth)
-        temp = entryInit("depth", 5, WORD_BUILTIN, depth, 0);
+        temp = entryInit("depth", 5, WORD_BUILTIN, depth, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (clear)
-        temp = entryInit("clear", 5, WORD_BUILTIN, clear, 0);
+        temp = entryInit("clear", 5, WORD_BUILTIN, clear, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (mod)
-        temp = entryInit("mod", 3, WORD_BUILTIN, mod, 0);
+        temp = entryInit("mod", 3, WORD_BUILTIN, mod, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // /mod
-        temp = entryInit("/mod", 4, WORD_BUILTIN, slashmod, 0);
+        temp = entryInit("/mod", 4, WORD_BUILTIN, slashmod, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // negate
-        temp = entryInit("negate", 6, WORD_BUILTIN, negate, 0);
+        temp = entryInit("negate", 6, WORD_BUILTIN, negate, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // abs
-        temp = entryInit("abs", 3, WORD_BUILTIN, fsabs, 0);
+        temp = entryInit("abs", 3, WORD_BUILTIN, fsabs, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // 1+
-        temp = entryInit("1+", 2, WORD_BUILTIN, oneplus, 0);
+        temp = entryInit("1+", 2, WORD_BUILTIN, oneplus, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // 1-
-        temp = entryInit("1-", 2, WORD_BUILTIN, onemin, 0);
+        temp = entryInit("1-", 2, WORD_BUILTIN, onemin, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // 2*
-        temp = entryInit("2*", 2, WORD_BUILTIN, twotimes, 0);
+        temp = entryInit("2*", 2, WORD_BUILTIN, twotimes, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // 2/
-        temp = entryInit("2/", 2, WORD_BUILTIN, twodiv, 0);
+        temp = entryInit("2/", 2, WORD_BUILTIN, twodiv, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (+)
-        temp = entryInit("+", 1, WORD_BUILTIN, fadd, 0);
+        temp = entryInit("+", 1, WORD_BUILTIN, fadd, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (-)
-        temp = entryInit("-", 1, WORD_BUILTIN, fsub, 0);
+        temp = entryInit("-", 1, WORD_BUILTIN, fsub, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (*)
-        temp = entryInit("*", 1, WORD_BUILTIN, fmul, 0);
+        temp = entryInit("*", 1, WORD_BUILTIN, fmul, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (/)
-        temp = entryInit("/", 1, WORD_BUILTIN, fdiv, 0);
+        temp = entryInit("/", 1, WORD_BUILTIN, fdiv, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (=)
-        temp = entryInit("=", 1, WORD_BUILTIN, eq, 0);
+        temp = entryInit("=", 1, WORD_BUILTIN, eq, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (<>)
-        temp = entryInit("<>", 2, WORD_BUILTIN, neq, 0);
+        temp = entryInit("<>", 2, WORD_BUILTIN, neq, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (<)
-        temp = entryInit("<", 1, WORD_BUILTIN, lt, 0);
+        temp = entryInit("<", 1, WORD_BUILTIN, lt, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (>)
-        temp = entryInit(">", 1, WORD_BUILTIN, gt, 0);
+        temp = entryInit(">", 1, WORD_BUILTIN, gt, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (<=)
-        temp = entryInit("<=", 2, WORD_BUILTIN, lte, 0);
+        temp = entryInit("<=", 2, WORD_BUILTIN, lte, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (>=)
-        temp = entryInit(">=", 2, WORD_BUILTIN, gte, 0);
+        temp = entryInit(">=", 2, WORD_BUILTIN, gte, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (0=)
-        temp = entryInit("0=", 2, WORD_BUILTIN, zeq, 0);
+        temp = entryInit("0=", 2, WORD_BUILTIN, zeq, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (0<)
-        temp = entryInit("0<", 2, WORD_BUILTIN, zlt, 0);
+        temp = entryInit("0<", 2, WORD_BUILTIN, zlt, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (0>)
-        temp = entryInit("0>", 2, WORD_BUILTIN, zgt, 0);
+        temp = entryInit("0>", 2, WORD_BUILTIN, zgt, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (and)
-        temp = entryInit("and", 3, WORD_BUILTIN, and, 0);
+        temp = entryInit("and", 3, WORD_BUILTIN, and, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (or)
-        temp = entryInit("or", 2, WORD_BUILTIN, or, 0);
+        temp = entryInit("or", 2, WORD_BUILTIN, or, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (xor)
-        temp = entryInit("xor", 3, WORD_BUILTIN, xor, 0);
+        temp = entryInit("xor", 3, WORD_BUILTIN, xor, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (invert)
-        temp = entryInit("invert", 6, WORD_BUILTIN, invert, 0);
+        temp = entryInit("invert", 6, WORD_BUILTIN, invert, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (lshift)
-        temp = entryInit("lshift", 6, WORD_BUILTIN, lshift, 0);
+        temp = entryInit("lshift", 6, WORD_BUILTIN, lshift, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (rshift)
-        temp = entryInit("rshift", 6, WORD_BUILTIN, rshift, 0);
+        temp = entryInit("rshift", 6, WORD_BUILTIN, rshift, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (cr)
-        temp = entryInit("cr", 2, WORD_BUILTIN, cr, 0);
+        temp = entryInit("cr", 2, WORD_BUILTIN, cr, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (space)
-        temp = entryInit("space", 5, WORD_BUILTIN, space, 0);
+        temp = entryInit("space", 5, WORD_BUILTIN, space, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (spaces)
-        temp = entryInit("spaces", 6, WORD_BUILTIN, spaces, 0);
+        temp = entryInit("spaces", 6, WORD_BUILTIN, spaces, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (emit)
-        temp = entryInit("emit", 4, WORD_BUILTIN, emit, 0);
+        temp = entryInit("emit", 4, WORD_BUILTIN, emit, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (u.)
-        temp = entryInit("u.", 2, WORD_BUILTIN, unsigndot, 0);
+        temp = entryInit("u.", 2, WORD_BUILTIN, unsigndot, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (words)
-        temp = entryInit("words", 5, WORD_BUILTIN, words, 0);
+        temp = entryInit("words", 5, WORD_BUILTIN, words, 0, NULL);
         dictionaryAdd(state->dict, temp);
 
         // (bye)
-        temp = entryInit("bye", 3, WORD_BUILTIN, bye, 0);
+        temp = entryInit("bye", 3, WORD_BUILTIN, bye, 0, NULL);
+        dictionaryAdd(state->dict, temp);
+
+        // (:)
+        temp = entryInit(":", 1, WORD_BUILTIN, userword, 0, NULL);
         dictionaryAdd(state->dict, temp);
     }
 
@@ -853,16 +979,9 @@ int main(void){
             }
             else if((word = dictionaryLookup(state->dict, state->curr->start, len)) != NULL){  // try to do a dictionary lookup
                 // we have an entry in the dictionary
-
-                if(word->type == WORD_BUILTIN){
-                    word->behavior(state);
-                }
-
-                // idk if this is still relevant
-                // TODO: execute the entry and add to the return stack
+                word->behavior(state);
             }
             else{   // error for undefined word
-                // TODO: add an error message
                 fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tUnidentified word.\n\t\tWord: \" %.*s \"\n", 0x1018, (int)len, state->curr->start);
             }
         }
