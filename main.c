@@ -724,7 +724,7 @@ void userword(void *na){// : and ;
             // make an action with a pointer to the entry (&word) then append
         }
 
-        curr = curr->next;
+        state->curr = state->curr->next;
     }
     // TODO: add a ACT_EOF to end the word
     puts("");
