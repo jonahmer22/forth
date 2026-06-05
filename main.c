@@ -224,13 +224,13 @@ typedef enum ActionType{
 typedef struct Action{
     ActionType type;
 
-    const cell num; // also used for storing encoded branch offsets
-    const char *str;
+    cell num; // also used for storing encoded branch offsets
+    char *str;
     Entry *word;
 } Action;
 
 typedef struct Body{
-    Action **actions;
+    Action *actions;
 
     size_t used;
     size_t cap;
@@ -240,7 +240,8 @@ Body *bodyInit(){
     Body *body = malloc(sizeof(Body));
 
     body->actions = malloc(sizeof(Action)*BASE_SIZE);
-    body->cap = body->used = 0;
+    body->cap = BASE_SIZE;
+    body->used = 0;
 
     return body;
 }
@@ -255,11 +256,13 @@ void bodyEnsureSize(Body *body, size_t size){
     }
 }
 
-void bodyAppend(Body *body, Action *action){
+void bodyAppend(Body *body, Action action){
     bodyEnsureSize(body, body->used + 1);
 
     body->actions[body->used++] = action;
 }
+
+// TODO: void bodyDestroy()
 
 // dictionary bs
 
@@ -680,6 +683,26 @@ void runUserWord(void *na){
 
     // walk the actions in the body until ACT_EOF
     // TODO: a good idea for branching is to use a scell to encode the offset and then subtract that from any index counter used to walk the list
+    Action *action = word->body->actions;
+    for(size_t i = 0; action[i].type != ACT_EOF; i++){
+        switch(action[i].type){
+            case ACT_NUM:{
+                dPush(action[i].num);
+                break;
+            }
+            case ACT_PRINT:{
+                printf("%s", action[i].str);
+                break;
+            }
+            case ACT_WORD:{
+                action[i].word->behavior(na);
+                break;
+            }
+            default:{
+                // TODO: should fatal error here
+            }
+        }
+    }
 
 }
 void userword(void *na){// : and ;
@@ -691,20 +714,26 @@ void userword(void *na){// : and ;
     // setup vars
     state->compileMode = 1;
     char name[MAX_TOKEN_LEN] = {0};
-    size_t len = (int)(state->curr->end-state->curr->start);
+    size_t nameLen = (size_t)(state->curr->end-state->curr->start);
     Body *body = bodyInit();
+    state->compBody = body;
 
-    // TODO: should check the name exists and is not just ';' which should be a soft error
+    // should check the name exists and is not just ';' which should be a soft error
+    if(memcmp(";", state->curr->start, nameLen) == 0){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tEmpty word definition.", 0x5331);
+        return;
+    }
     // set the name
-    memcpy(name, state->curr->start, len);
+    memcpy(name, state->curr->start, nameLen);
     state->curr = state->curr->next;    // move current token past the name
 
     printf("name: %s\n", name);
 
     printf("body: ");
-    while(*(state->curr->start) != ';'){
+    while(state->curr != NULL && *(state->curr->start) != ';'){
         TokenList *curr = state->curr;
-        printf("%.*s ", (int)(curr->end-curr->start), curr->start);
+        size_t len = (curr->end-curr->start);
+        printf("%.*s ", (int)len, curr->start);
 
         // TODO: find out whether it's a number, then word (handle specials like string etc)
         char *p;
@@ -712,24 +741,51 @@ void userword(void *na){// : and ;
 
         // spoilers
         Entry *word;
+        Action temp = {0};
         
         if(((p-curr->start) == (len)) && (p != curr->start)){   // seee if it's a number
-            // we have a number, all we have to do is put it on the stack as unsigned
-            
-            // TODO: make an action that is just a number and append it
+            // we have a number
+            temp.num = num;
+            temp.type = ACT_NUM;
+            // make an action that is just a number and append it
+            bodyAppend(state->compBody, temp);
+        }
+        else if((len == 2) && !memcmp(".\"", curr->start, len)){  // do a check for (.")
+            if(curr->next == NULL){
+                fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tPrint statement missing a string.\n", 0x0707);
+                exit(EXIT_FAILURE);
+            }
+            const char *start = curr->next->start;
+            const char *end = curr->next->end;
+
+            curr = curr->next;
+
+            size_t size = (end-start);
+            char *str = arenaAlloc(sizeof(char)*size);
+            memcpy(str, start, size);
+            str[size] = '\0';
+
+            temp.str = str;
+            temp.type = ACT_PRINT;
+
+            bodyAppend(state->compBody, temp);
         }
         else if((word = dictionaryLookup(state->dict, curr->start, len)) != NULL){  // try to do a dictionary lookup
             // we have an entry in the dictionary
-            
+            temp.word = word;
+            temp.type = ACT_WORD;
             // make an action with a pointer to the entry (&word) then append
+            bodyAppend(state->compBody, temp);
         }
 
         state->curr = state->curr->next;
     }
-    // TODO: add a ACT_EOF to end the word
-    puts("");
+    // add a ACT_EOF to end the word
+    Action end = {0};
+    end.type = ACT_EOF;
+    bodyAppend(state->compBody, end);
 
-    dictionaryAdd(state->dict, entryInit(name, len, WORD_USERDEF, runUserWord, 0, body));
+    dictionaryAdd(state->dict, entryInit(name, nameLen, WORD_USERDEF, runUserWord, 0, body));
 }
 
 int main(void){
