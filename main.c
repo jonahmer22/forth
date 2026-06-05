@@ -675,7 +675,7 @@ void bye(void *na){     // bye
     exit(EXIT_SUCCESS);
 }
 void runUserWord(void *na){
-    // TODO: should execute a user word based on the name curr (do a dict search then execute the body)
+    // should execute a user word based on the name curr (do a dict search then execute the body)
     State *state = (State *)na;
 
     // find our word
@@ -735,7 +735,7 @@ void userword(void *na){// : and ;
         size_t len = (curr->end-curr->start);
         printf("%.*s ", (int)len, curr->start);
 
-        // TODO: find out whether it's a number, then word (handle specials like string etc)
+        // find out whether it's a number, then word (handle specials like string etc)
         char *p;
         scell num = SIGNED strtoimax(curr->start, &p, 0);
 
@@ -786,6 +786,7 @@ void userword(void *na){// : and ;
     bodyAppend(state->compBody, end);
 
     dictionaryAdd(state->dict, entryInit(name, nameLen, WORD_USERDEF, runUserWord, 0, body));
+    state->compileMode = 0;
 }
 
 int main(void){
