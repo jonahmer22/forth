@@ -949,7 +949,7 @@ void forth_include(void *na){   // INCLUDE <path>
     evalFile(state, path);
 }
 
-// ── comments ────────────────────────────────────────────────────────────────
+//  comments 
 
 void forth_backslash(void *na){     // \  line comment — consume rest of line
     State *state = (State *)na;
@@ -989,7 +989,7 @@ void forth_dot_paren(void *na){     // .(  print until )
     }
 }
 
-// ── stack ops ────────────────────────────────────────────────────────────────
+//  stack ops 
 
 void forth_qdup(void *na){      // ?DUP  ( n -- n n | 0 )
     cell t = dPop();
@@ -1054,7 +1054,7 @@ void forth_2rfetch(void *na){   // 2R@  ( -- d ) R:( d -- d )
     dPush((cell)rstack[rsp-1]);
 }
 
-// ── arithmetic ───────────────────────────────────────────────────────────────
+//  arithmetic 
 
 void forth_star_slash(void *na){    // */  ( n1 n2 n3 -- n4 )  n4 = n1*n2/n3
     scell n3 = SIGNED dPop();
@@ -1122,7 +1122,7 @@ void forth_s_to_d(void *na){    // S>D  ( n -- d )
     dPush(n < 0 ? (cell)-1 : 0);
 }
 
-// ── comparisons ──────────────────────────────────────────────────────────────
+//  comparisons 
 
 void forth_zero_ne(void *na){   // 0<>  ( n -- flag )
     dPush(dPop() != 0 ? (cell)-1 : 0);
@@ -1143,7 +1143,7 @@ void forth_false(void *na){ dPush(0); }         // FALSE
 void forth_true(void *na){  dPush((cell)-1); }  // TRUE
 void forth_bl(void *na){    dPush(32); }         // BL  ( -- 32 )
 
-// ── memory / data space ──────────────────────────────────────────────────────
+//  memory / data space 
 
 void forth_cfetch(void *na){    // C@  ( addr -- char )
     cell addr = dPop();
@@ -1204,7 +1204,7 @@ void forth_unused(void *na){    // UNUSED  ( -- u )
     dPush((cell)(DATA_SIZE - data_here));
 }
 
-// ── characters / strings ─────────────────────────────────────────────────────
+//  characters / strings 
 
 void forth_char(void *na){      // CHAR  ( "<spaces>name" -- char )
     State *state = (State *)na;
@@ -1235,7 +1235,7 @@ void forth_u_dot_r(void *na){   // U.R  ( u width -- )
     fputs(buf, stdout);
 }
 
-// ── number formatting (<# # #S #> HOLD SIGN) ────────────────────────────────
+//  number formatting (<# # #S #> HOLD SIGN) 
 
 void forth_hold(void *na){      // HOLD  ( char -- )
     State *state = (State *)na;
@@ -1293,7 +1293,7 @@ void forth_hash_greater(void *na){ // #>  ( ud -- addr len )
     dPush((cell)state->hbuf_len);
 }
 
-// ── string literals ──────────────────────────────────────────────────────────
+//  string literals 
 
 // helper: parse S" string from the current token stream into data_space
 // returns pointer to null-terminated copy; pushes addr+len if push_it
@@ -1354,7 +1354,7 @@ void forth_s_quote_compile(void *na){
     bodyAppend(state->compBody, a);
 }
 
-// ── I/O ──────────────────────────────────────────────────────────────────────
+//  I/O 
 
 void forth_accept(void *na){    // ACCEPT  ( addr len -- actual )
     cell maxlen = dPop();
@@ -1366,7 +1366,7 @@ void forth_accept(void *na){    // ACCEPT  ( addr len -- actual )
     dPush((cell)n);
 }
 
-// ── interpreter state ────────────────────────────────────────────────────────
+//  interpreter state 
 
 void forth_state(void *na){     // STATE  ( -- addr )
     State *state = (State *)na;
@@ -1424,7 +1424,7 @@ void forth_evaluate(void *na){  // EVALUATE  ( addr len -- )
     state->input    = saved_input;
 }
 
-// ── compile-mode words ───────────────────────────────────────────────────────
+//  compile-mode words 
 
 void forth_lbracket(void *na){  // [  switch to interpret mode
     State *state = (State *)na;
@@ -1492,7 +1492,7 @@ void forth_immediate(void *na){ // IMMEDIATE  mark last defined word as immediat
         state->dict->head->flags |= FLAG_IMMEDIATE;
 }
 
-// ── defining words ───────────────────────────────────────────────────────────
+//  defining words 
 
 void forth_create(void *na){    // CREATE name  ( -- )
     State *state = (State *)na;
@@ -1534,7 +1534,7 @@ void forth_does(void *na){      // DOES>  (immediate, compile-only)
     bodyAppend(state->compBody, a);
 }
 
-// ── dictionary / parsing ─────────────────────────────────────────────────────
+//  dictionary / parsing 
 
 void forth_find(void *na){      // FIND  ( c-addr -- c-addr 0 | xt 1 | xt -1 )
     State *state = (State *)na;
@@ -1594,7 +1594,7 @@ void forth_to_number(void *na){ // >NUMBER  ( ud c-addr u1 -- ud c-addr+u2 u2 )
     dPush((cell)(u1 - i));
 }
 
-// ── error handling ───────────────────────────────────────────────────────────
+//  error handling 
 
 void forth_abort(void *na){     // ABORT
     dClear(); rClear();
@@ -1630,7 +1630,7 @@ void forth_quit(void *na){      // QUIT  — abandon current operation, back to 
     state->compiling   = NULL;
 }
 
-// ── :NONAME ──────────────────────────────────────────────────────────────────
+//  :NONAME 
 
 void forth_noname(void *na){    // :NONAME  ( -- xt )
     State *state = (State *)na;
@@ -1651,7 +1651,7 @@ void forth_noname(void *na){    // :NONAME  ( -- xt )
     // just return; ] is now active and the main loop will compile tokens
 }
 
-// ── CASE/OF/ENDOF/ENDCASE ────────────────────────────────────────────────────
+//  CASE/OF/ENDOF/ENDCASE 
 
 void forth_case(void *na){      // CASE  push 0 marker onto cpstack
     State *state = (State *)na;
@@ -1710,7 +1710,7 @@ void forth_endcase(void *na){   // ENDCASE  ( x -- )
     if(state->csp > 0) state->csp--; // pop the 0 marker
 }
 
-// ── VALUE / TO ───────────────────────────────────────────────────────────────
+//  VALUE / TO 
 
 void forth_value(void *na){     // VALUE name  ( n -- )
     State *state = (State *)na;
@@ -1754,7 +1754,7 @@ void forth_to(void *na){        // TO name  ( n -- )
     *e->data_field = dPop();
 }
 
-// ── INCLUDED ─────────────────────────────────────────────────────────────────
+//  INCLUDED 
 
 void forth_included(void *na){  // INCLUDED  ( addr len -- )
     State *state = (State *)na;
@@ -1766,7 +1766,7 @@ void forth_included(void *na){  // INCLUDED  ( addr len -- )
     evalFile(state, path);
 }
 
-// ── ENVIRONMENT? ─────────────────────────────────────────────────────────────
+//  ENVIRONMENT? 
 
 void forth_environment_q(void *na){ // ENVIRONMENT?  ( addr len -- false | ... true )
     cell len  = dPop();
@@ -1787,7 +1787,7 @@ void forth_environment_q(void *na){ // ENVIRONMENT?  ( addr len -- false | ... t
     dPush(0); // false — not found
 }
 
-// ── ?DO ──────────────────────────────────────────────────────────────────────
+//  ?DO 
 
 void forth_qdo(void *na){       // ?DO  ( limit start -- )  skip if equal
     State *state = (State *)na;
@@ -1808,7 +1808,7 @@ void forth_qdo(void *na){       // ?DO  ( limit start -- )  skip if equal
     state->cpstack[state->csp++] = do_idx;
 }
 
-// ── registers all builtins into the dictionary
+//  registers all builtins into the dictionary
 
 void registerBuiltins(State *state){
     Entry *temp = NULL;
