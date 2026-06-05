@@ -1,12 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "include/types.h"
-#include "include/stack.h"
-#include "include/token.h"
-#include "include/dict.h"
-#include "include/builtins.h"
-#include "arena/arena.h"
+#include "../include/types.h"
+#include "../include/stack.h"
+#include "../include/token.h"
+#include "../include/dict.h"
+#include "../include/builtins.h"
+#include "../arena/arena.h"
 
 // input line
 

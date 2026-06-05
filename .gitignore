@@ -4,6 +4,9 @@ lang
 # macos
 *.DS_Store
 
+# extras
+*.bak
+
 # venvs
 *.venv
 env

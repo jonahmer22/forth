@@ -1,5 +1,15 @@
+CC     = gcc
+CFLAGS = -Wall -Iinclude -Iarena -lm
+
+SRCS = main.c         \
+       src/stack.c    \
+       src/token.c    \
+       src/dict.c     \
+       src/builtins.c \
+       arena/arena.c
+
 all:
-	gcc main.c ./arena/arena.c -Iarena -lm -Wall -o lang
+	$(CC) $(SRCS) $(CFLAGS) -o lang
 
 clean:
 	rm lang
