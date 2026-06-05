@@ -142,6 +142,11 @@ void forth_type(void *na); // TYPE
 void runUserWord(void *na);
 void userword(void *na);    // :
 
+// file evaluation
+
+void evalFile(State *state, const char *path);
+void forth_include(void *na);   // INCLUDE
+
 // registers all builtins into the dictionary
 void registerBuiltins(State *state);
 

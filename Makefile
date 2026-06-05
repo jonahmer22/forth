@@ -9,7 +9,7 @@ SRCS = main.c         \
        arena/arena.c
 
 all:
-	$(CC) $(SRCS) $(CFLAGS) -o lang
+	$(CC) $(SRCS) $(CFLAGS) -o forth
 
 clean:
-	rm lang
+	rm forth

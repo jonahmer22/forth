@@ -12,13 +12,20 @@
 
 char line[LINE_SIZE];
 
-int main(void){
+int main(int argc, char **argv){
     arenaInit();
 
     // central state
     State *state = stateInit(dictionaryInit(), NULL, dstack, &dsp, rstack, &rsp);
 
     registerBuiltins(state);
+
+    // run a file if one was passed on the command line
+    if(argc > 1){
+        evalFile(state, argv[1]);
+        arenaDestroy();
+        return EXIT_SUCCESS;
+    }
 
     printf("\x1b[1;31mFORTHISH\x1b[0m\nA FORTH-like language made to be as dead simple as I can think of making a language.\n");
 

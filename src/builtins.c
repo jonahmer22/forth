@@ -315,12 +315,11 @@ void rfetch(void *na){  // R@  ( -- n )  R:( n -- n )
 
 // user word execution / compilation
 
-void runUserWord(void *na){
-    State *state = (State *)na;
-
-    Entry *word = dictionaryLookup(state->dict, state->curr->start, (size_t)(state->curr->end-state->curr->start));
-
-    Action *action = word->body->actions;
+// execBody runs a compiled body directly without a dict lookup.
+// this is what gets called when one user word calls another — bypassing
+// runUserWord's state->curr lookup which would point at the wrong token.
+static void execBody(Body *body, void *na){
+    Action *action = body->actions;
     for(size_t i = 0; action[i].type != ACT_EOF; ){
         switch(action[i].type){
             case ACT_NUM:{
@@ -334,7 +333,11 @@ void runUserWord(void *na){
                 break;
             }
             case ACT_WORD:{
-                action[i].word->behavior(na);
+                if(action[i].word->type == WORD_USERDEF){
+                    execBody(action[i].word->body, na);
+                } else {
+                    action[i].word->behavior(na);
+                }
                 i++;
                 break;
             }
@@ -395,6 +398,14 @@ void runUserWord(void *na){
             }
         }
     }
+}
+
+// runUserWord is called by the interpreter loop; it looks up the word by
+// state->curr and hands off to execBody
+void runUserWord(void *na){
+    State *state = (State *)na;
+    Entry *word = dictionaryLookup(state->dict, state->curr->start, (size_t)(state->curr->end-state->curr->start));
+    execBody(word->body, na);
 }
 
 void userword(void *na){// : and ;
@@ -773,6 +784,84 @@ void forth_type(void *na){  // TYPE  ( addr len -- )
     fwrite((char *)addr, 1, (size_t)len, stdout);
 }
 
+// file evaluation
+
+void evalFile(State *state, const char *path){
+    FILE *f = fopen(path, "r");
+    if(f == NULL){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tCould not open file: %s\n", 0x6100, path);
+        return;
+    }
+
+    // save token state so nested INCLUDE / returning to the REPL works correctly
+    TokenList *saved_list = state->list;
+    TokenList *saved_curr = state->curr;
+
+    char buf[LINE_SIZE];
+    while(fgets(buf, sizeof(buf), f) != NULL){
+        buf[strcspn(buf, "\n")] = '\0';
+
+        // skip blank lines and line comments
+        if(buf[0] == '\0' || (buf[0] == '\\' && buf[1] == ' '))
+            continue;
+
+        TokenList *list = tokenizeSrc(buf);
+        state->list = state->curr = list;
+
+        for(; state->curr != NULL; state->curr = state->curr->next){
+            char   temp[MAX_TOKEN_LEN] = {0};
+            size_t len = (state->curr->end - state->curr->start);
+
+            if(len >= MAX_TOKEN_LEN){
+                fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tToken is longer than buffer length of (%d).\n", 0x0670, MAX_TOKEN_LEN);
+                fclose(f);
+                return;
+            }
+
+            memcpy(temp, state->curr->start, len);
+
+            char  *p;
+            scell  num = SIGNED strtoimax(temp, &p, num_base);
+
+            Entry *word;
+
+            if(((p-temp) == (ptrdiff_t)len) && (p != temp)){
+                dPush(UNSIGNED num);
+                continue;
+            }
+            else if((word = dictionaryLookup(state->dict, state->curr->start, len)) != NULL){
+                if(word->flags & FLAG_COMPILE_ONLY){
+                    fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\t'%s' is compile-only.\n", 0x5500, word->name);
+                } else {
+                    word->behavior(state);
+                }
+            }
+            else{
+                fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tUnidentified word.\n\t\tWord: \" %.*s \"\n", 0x1018, (int)len, state->curr->start);
+            }
+        }
+    }
+
+    fclose(f);
+
+    // restore token state
+    state->list = saved_list;
+    state->curr = saved_curr;
+}
+
+void forth_include(void *na){   // INCLUDE <path>
+    State *state = (State *)na;
+    if(state->curr->next == NULL){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tINCLUDE missing filename.\n", 0x6101);
+        return;
+    }
+    state->curr = state->curr->next;
+    size_t len = (size_t)(state->curr->end - state->curr->start);
+    char path[MAX_TOKEN_LEN] = {0};
+    memcpy(path, state->curr->start, len);
+    evalFile(state, path);
+}
+
 // registers all builtins into the dictionary
 
 void registerBuiltins(State *state){
@@ -1058,5 +1147,10 @@ void registerBuiltins(State *state){
     dictionaryAdd(state->dict, temp);
 
     temp = entryInit("TYPE", 4, WORD_BUILTIN, forth_type, 0, NULL);
+    dictionaryAdd(state->dict, temp);
+
+    // file evaluation
+
+    temp = entryInit("INCLUDE", 7, WORD_BUILTIN, forth_include, 0, NULL);
     dictionaryAdd(state->dict, temp);
 }
