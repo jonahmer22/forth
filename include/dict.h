@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include "types.h"
 #include "token.h"
 
@@ -22,6 +23,7 @@ typedef enum ActionType{
     ACT_I,         // ( -- i ) copy top of loop frame
     ACT_J,         // ( -- j ) copy outer loop index
     ACT_EXIT,      // return from word early
+    ACT_DOES,      // does> runtime: patch last-created word; num = does-part start index
     ACT_EOF
 } ActionType;
 
@@ -66,6 +68,10 @@ typedef struct Entry{
     // apparently the answer is this
     Body *body;
 
+    // for CREATE'd / DOES> words
+    cell  *data_field;  // points into data_space
+    Body  *does_body;   // runtime body set by DOES>
+
     // immediate, hidden, compileonly, etc.
     uint8_t flags;
 
@@ -89,8 +95,8 @@ Entry      *dictionaryLookup(Dictionary *dict, const char *start, size_t nLen);
 typedef struct State{
     Dictionary *dict;
 
-    Entry *compiling;   // the word that is currently being compiled
-    Body  *compBody;    // the body of the word that is currently being compiled
+    Entry *compiling;    // the word that is currently being compiled
+    Body  *compBody;     // the body of the word that is currently being compiled
 
     TokenList *list;
     TokenList *curr;
@@ -108,8 +114,28 @@ typedef struct State{
     // compile-time backpatch stack
     size_t cpstack[64];
     size_t csp;
+
+    // input / source state
+    FILE   *input;           // current input file (NULL = stdin)
+    char    ibuf[LINE_SIZE]; // current input line (SOURCE)
+    size_t  ibuf_len;        // length of ibuf
+    cell    inp;             // >IN - parse offset into ibuf
+
+    // addressable STATE variable (0 = interpret, 1 = compile)
+    cell    state_var;
+
+    // last defined and last CREATEd entries
+    Entry  *last_created;
+
+    // number-output hold area for <# # #S #> HOLD SIGN
+    char    hbuf[68];
+    size_t  hbuf_len;
 } State;
 
 State *stateInit(Dictionary *dict, TokenList *list, cell *dstack, size_t *dsp, uint64_t *rstack, size_t *rsp);
+
+// read next line from state->input (or stdin) into state->ibuf
+// returns 1 on success, 0 on EOF
+int stateRefill(State *state);
 
 #endif
