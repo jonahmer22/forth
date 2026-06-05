@@ -8,11 +8,44 @@
 #include "include/builtins.h"
 #include "arena/arena.h"
 
+// version / description
+
+#define VERSION     "0.1.0"
+#define DESCRIPTION "a FORTH-like language made to be as dead simple as I can think of making a language."
+
 // input line
 
 char line[LINE_SIZE];
 
+static void printVersion(){
+    printf("forth %s\n", VERSION);
+}
+
+static void printHelp(){
+    printf("forth %s\n", VERSION);
+    printf("%s\n\n", DESCRIPTION);
+    printf("usage:\n");
+    printf("  forth              start the interactive REPL\n");
+    printf("  forth <file>       run a .fs file\n");
+    printf("\n");
+    printf("options:\n");
+    printf("  -h, --help         show this message\n");
+    printf("  -v, --version      show version\n");
+}
+
 int main(int argc, char **argv){
+    // handle flags before doing anything else
+    if(argc > 1){
+        if(strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0){
+            printHelp();
+            return EXIT_SUCCESS;
+        }
+        if(strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0){
+            printVersion();
+            return EXIT_SUCCESS;
+        }
+    }
+
     arenaInit();
 
     // central state
