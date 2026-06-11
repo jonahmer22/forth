@@ -11,7 +11,7 @@ Body *bodyInit(){
     Body *body = malloc(sizeof(Body));
 
     body->actions = malloc(sizeof(Action)*BASE_SIZE);
-    body->cap  = BASE_SIZE;
+    body->cap = BASE_SIZE;
     body->used = 0;
 
     return body;
@@ -47,7 +47,7 @@ Entry *entryInit(const char *name, size_t nLen, WordType type, void (*behavior)(
     temp->body = body;
 
     temp->data_field = NULL;
-    temp->does_body  = NULL;
+    temp->does_body = NULL;
 
     temp->flags = flags;
 
@@ -60,7 +60,7 @@ Dictionary *dictionaryInit(){
     Dictionary *temp = arenaAlloc(sizeof(Dictionary));
 
     temp->head = NULL;
-    temp->len  = 0;
+    temp->len = 0;
 
     return temp;
 }
@@ -99,15 +99,15 @@ State *stateInit(Dictionary *dict, TokenList *list, cell *dstack, size_t *dsp, u
         state->dict = dict;
 
         state->compiling = NULL;
-        state->compBody  = NULL;
+        state->compBody = NULL;
 
         state->list = state->curr = list;
 
         state->dstack = dstack;
-        state->dsp    = dsp;
+        state->dsp = dsp;
 
         state->rstack = rstack;
-        state->rsp    = rsp;
+        state->rsp = rsp;
 
         state->compileMode = 0;
 
@@ -115,10 +115,10 @@ State *stateInit(Dictionary *dict, TokenList *list, cell *dstack, size_t *dsp, u
 
         state->csp = 0;
 
-        state->input    = NULL;
-        state->ibuf[0]  = '\0';
+        state->input = NULL;
+        state->ibuf[0] = '\0';
         state->ibuf_len = 0;
-        state->inp      = 0;
+        state->inp = 0;
 
         state->state_var = 0;
 
@@ -127,7 +127,8 @@ State *stateInit(Dictionary *dict, TokenList *list, cell *dstack, size_t *dsp, u
         state->hbuf_len = 0;
 
         state->quit_jmp_valid = 0;
-        state->in_evaluate    = 0;
+        state->in_evaluate = 0;
+        state->leave_sp = 0;
     }
 
     return state;
@@ -135,9 +136,12 @@ State *stateInit(Dictionary *dict, TokenList *list, cell *dstack, size_t *dsp, u
 
 int stateRefill(State *state){
     FILE *src = state->input ? state->input : stdin;
-    if(fgets(state->ibuf, LINE_SIZE, src) == NULL) return 0;
+    if(fgets(state->ibuf, LINE_SIZE, src) == NULL)
+        return 0;
+
     state->ibuf[strcspn(state->ibuf, "\n")] = '\0';
     state->ibuf_len = strlen(state->ibuf);
     state->inp = 0;
+    
     return 1;
 }

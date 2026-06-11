@@ -19,3 +19,7 @@ create arr 10 cells allot
 
 fill-arr
 print-arr
+
+cr
+
+arr 9 cells + @ square . cr

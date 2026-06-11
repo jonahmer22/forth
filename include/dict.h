@@ -24,6 +24,7 @@ typedef enum ActionType{
     ACT_I,         // ( -- i ) copy top of loop frame
     ACT_J,         // ( -- j ) copy outer loop index
     ACT_EXIT,      // return from word early
+    ACT_LEAVE,     // discard loop frame and branch past LOOP; num = target index
     ACT_DOES,        // does> runtime: patch last-created word; num = does-part start index
     ACT_ABORT_QUOTE, // runtime ABORT": str = message; pops flag, aborts if nonzero
     ACT_EOF
@@ -116,6 +117,10 @@ typedef struct State{
     // compile-time backpatch stack
     size_t cpstack[64];
     size_t csp;
+
+    // LEAVE forward-branch patch list (indexed by loop nesting)
+    size_t leave_patches[256];
+    size_t leave_sp;
 
     // input / source state
     FILE   *input;           // current input file (NULL = stdin)

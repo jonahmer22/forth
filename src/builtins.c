@@ -14,6 +14,61 @@
 // number base (changed by HEX / DECIMAL)
 cell num_base = 10;
 
+// Try to parse a number with optional base prefix (#, $, %) or character literal ('c').
+// Returns 1 and sets *result on success, 0 on failure.
+static int tryParseNumber(const char *str, size_t len, cell *result){
+    if(len == 0) return 0;
+
+    // 'c' character literal: single character between single quotes
+    if(len == 3 && str[0] == '\'' && str[2] == '\''){
+        *result = (cell)(unsigned char)str[1];
+        return 1;
+    }
+
+    int base = (int)num_base;
+    size_t pos = 0;
+
+    if(str[0] == '#'){
+        base = 10;
+        pos = 1;
+    }
+    else if(str[0] == '$'){
+        base = 16;
+        pos = 1;
+    }
+    else if(str[0] == '%'){
+        base = 2;
+        pos = 1;
+    }
+
+    int negative = 0;
+    if(pos < len && str[pos] == '-'){ negative = 1; pos++; }
+
+    if(pos >= len) return 0;
+
+    cell val = 0;
+    for(size_t i = pos; i < len; i++){
+        char c = str[i];
+        int digit;
+        if(c >= '0' && c <= '9')
+            digit = c - '0';
+        else if(c >= 'a' && c <= 'z')
+            digit = c - 'a' + 10;
+        else if(c >= 'A' && c <= 'Z')
+            digit = c - 'A' + 10;
+        else
+            return 0;
+
+        if(digit >= base)
+            return 0;
+
+        val = val * (cell)base + (cell)digit;
+    }
+
+    *result = negative ? (cell)(-(scell)val) : val;
+    return 1;
+}
+
 // data space for VARIABLE / ALLOT / HERE
 uint8_t data_space[DATA_SIZE];
 size_t  data_here = 0;
@@ -443,6 +498,11 @@ static void execBody(Body *body, void *na){
             case ACT_EXIT:{
                 return;
             }
+            case ACT_LEAVE:{
+                if(rsp >= 2) rsp -= 2; // discard loop frame
+                i = (size_t)action[i].num; // branch past LOOP
+                break;
+            }
             case ACT_ABORT_QUOTE:{
                 cell flag = dPop();
                 if(flag){
@@ -516,12 +576,11 @@ static void compileToken(State *state){
 
     // in interpret mode (after [), execute everything
     if(state->state_var == 0){
-        char *p;
         char tmp[MAX_TOKEN_LEN] = {0};
         memcpy(tmp, state->curr->start, len);
-        scell num = SIGNED strtoimax(tmp, &p, num_base);
-        if(((size_t)(p - tmp) == len) && (p != tmp)){
-            dPush(UNSIGNED num);
+        cell num;
+        if(tryParseNumber(tmp, len, &num)){
+            dPush(num);
         }
         else{
             Entry *word = dictionaryLookup(state->dict, state->curr->start, len);
@@ -534,15 +593,13 @@ static void compileToken(State *state){
     }
 
     // compile mode
-    char *p;
-    scell num = SIGNED strtoimax(state->curr->start, &p, num_base);
-
     Action act = {0};
     Entry *word;
+    cell num;
 
-    if(((size_t)(p - state->curr->start) == len) && (p != state->curr->start)){
+    if(tryParseNumber(state->curr->start, len, &num)){
         // number literal
-        act.num  = UNSIGNED num;
+        act.num  = num;
         act.type = ACT_NUM;
 
         bodyAppend(state->compBody, act);
@@ -808,6 +865,18 @@ void forth_do(void *na){    // DO  ( limit start -- )
     bodyAppend(state->compBody, a);
     state->cpstack[state->csp++] = (size_t)-1;               // no skip-branch
     state->cpstack[state->csp++] = state->compBody->used - 1; // index of DO action
+    state->leave_patches[state->leave_sp++] = (size_t)-1;    // LEAVE nesting sentinel
+}
+
+// Patch all pending LEAVE entries for the innermost loop up to its sentinel.
+static void patchLeaves(State *state, size_t after_loop){
+    while(state->leave_sp > 0){
+        size_t idx = state->leave_patches[--state->leave_sp];
+        if(idx == (size_t)-1)
+            break;  // hit sentinel
+            
+        state->compBody->actions[idx].num = (cell)after_loop;
+    }
 }
 
 void forth_loop(void *na){  // LOOP
@@ -829,6 +898,7 @@ void forth_loop(void *na){  // LOOP
     state->compBody->actions[do_idx].num = (cell)after_loop; // DO exit = after LOOP
     if(br_idx != (size_t)-1)
         state->compBody->actions[br_idx].num = (cell)after_loop; // ?DO skip branch
+    patchLeaves(state, after_loop);
 }
 
 void forth_plus_loop(void *na){ // +LOOP  ( n -- )
@@ -850,6 +920,7 @@ void forth_plus_loop(void *na){ // +LOOP  ( n -- )
     state->compBody->actions[do_idx].num = (cell)after_loop;
     if(br_idx != (size_t)-1)
         state->compBody->actions[br_idx].num = (cell)after_loop;
+    patchLeaves(state, after_loop);
 }
 
 void forth_i(void *na){     // I  ( -- index )
@@ -858,11 +929,18 @@ void forth_i(void *na){     // I  ( -- index )
 void forth_j(void *na){     // J  ( -- outer-index )
     dPush((cell)rstack[rsp-3]);
 }
-void forth_leave(void *na){ // LEAVE  ( -- )  force loop exit on next LOOP check
-    if(rsp < 2){
+void forth_leave(void *na){ // LEAVE  ( -- )  compile-only: branch past LOOP + discard frame
+    State *state = (State *)na;
+    if(!state->compileMode){
+        compile_error_not_in_def("LEAVE");
         return;
     }
-    rstack[rsp-1] = rstack[rsp-2]; // set index = limit so LOOP exits
+    Action a = {0};
+    a.type = ACT_LEAVE;
+    a.num  = 0; // target patched by LOOP
+    bodyAppend(state->compBody, a);
+    // record index so LOOP can patch it
+    state->leave_patches[state->leave_sp++] = state->compBody->used - 1;
 }
 
 // exit / recurse (compile-only)
@@ -1067,13 +1145,11 @@ void interpLine(State *state){
         if(state->curr->end >= state->ibuf && state->curr->end <= state->ibuf + state->ibuf_len)
             state->inp = (cell)(state->curr->end - state->ibuf);
 
-        char *p;
-        scell num = SIGNED strtoimax(temp, &p, num_base);
-
+        cell num;
         Entry *word;
 
-        if(((p-temp) == (ptrdiff_t)len) && (p != temp)){
-            dPush(UNSIGNED num);
+        if(tryParseNumber(temp, len, &num)){
+            dPush(num);
             continue;
         }
         else if((word = dictionaryLookup(state->dict, state->curr->start, len)) != NULL){
@@ -1751,6 +1827,7 @@ void forth_source_id(void *na){ // SOURCE-ID  ( -- 0|-1|fileid )
         dPush((cell)-1);
         return;
     }
+    // 0 = keyboard, -1 = EVALUATE, non-zero file ID for file input
     dPush(state->input ? (cell)(intptr_t)state->input : 0);
 }
 void forth_evaluate(void *na){  // EVALUATE  ( addr len -- )
@@ -2143,7 +2220,7 @@ void forth_noname(void *na){    // :NONAME  ( -- xt )
         }
 
         if(state->curr->end - state->curr->start == 1 && *state->curr->start == ';'){
-            state->curr = state->curr->next;
+            // leave curr pointing AT ';' so caller's increment moves past it
             break;
         }
 
@@ -2387,6 +2464,21 @@ void forth_environment_q(void *na){ // ENVIRONMENT?  ( addr len -- false | ... t
         dPush(STACK_SIZE); dPush((cell)-1);
         return;
     }
+    if(strcmp(name, "MAX-D") == 0){
+        // max positive double: (2^(2*cell_bits-1))-1 as two cells hi:lo
+        cell lo = (cell)-1; // all bits set (low cell)
+        cell hi = ((cell)1 << (sizeof(cell)*8 - 1)) - 1; // max signed high cell
+        dPush(lo); dPush(hi); dPush((cell)-1);
+        return;
+    }
+    if(strcmp(name, "MAX-UD") == 0){
+        dPush((cell)-1); dPush((cell)-1); dPush((cell)-1); // max unsigned double
+        return;
+    }
+    if(strcmp(name, "RETURN-STACK-CELLS") == 0){
+        dPush(STACK_SIZE); dPush((cell)-1);
+        return;
+    }
     dPush(0); // false  not found
 }
 
@@ -2425,6 +2517,7 @@ void forth_qdo(void *na){       // ?DO  ( limit start -- )  skip if equal
     do_act.num = 0; // exit address patched by LOOP
     bodyAppend(state->compBody, do_act);
     size_t do_idx = state->compBody->used - 1;
+    state->leave_patches[state->leave_sp++] = (size_t)-1; // LEAVE nesting sentinel
 
     // cpstack layout matches DO: br_idx below, do_idx on top
     state->cpstack[state->csp++] = br_idx;
@@ -2651,7 +2744,7 @@ void registerBuiltins(State *state){
     temp = entryInit("J", 1, WORD_BUILTIN, forth_j, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("LEAVE", 5, WORD_BUILTIN, forth_leave, 0, NULL);
+    temp = entryInit("LEAVE", 5, WORD_BUILTIN, forth_leave, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
     // exit / recurse (immediate + compile-only)
