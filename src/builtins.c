@@ -447,8 +447,17 @@ static void execBody(Body *body, void *na){
                 cell flag = dPop();
                 if(flag){
                     fprintf(stderr, "\x1b[1;93m[ABORT]: %s\x1b[0m\n", action[i].str);
+                    // perform ABORT: empty stacks + QUIT (longjmp to REPL)
                     dClear(); rClear();
+                    state->compileMode = 0;
+                    state->state_var = 0;
+                    state->compBody = NULL;
+                    state->compiling = NULL;
+                    state->input = NULL;
+                    state->in_evaluate = 0;
                     state->curr = NULL;
+                    if(state->quit_jmp_valid)
+                        longjmp(state->quit_jmp, 1);
                     return;
                 }
                 i++;
@@ -1255,7 +1264,8 @@ void forth_star_slash(void *na){    // */  ( n1 n2 n3 -- n4 )  n4 = n1*n2/n3
         return;
     }
 
-    dPush(UNSIGNED ((n1 * n2) / n3));
+    __int128_t t = (__int128_t)(int64_t)n1 * (__int128_t)(int64_t)n2;
+    dPush(UNSIGNED (scell)(int64_t)(t / (int64_t)n3));
 }
 void forth_star_slash_mod(void *na){ // */MOD  ( n1 n2 n3 -- n4 n5 )
     scell n3 = SIGNED dPop();
@@ -1267,43 +1277,45 @@ void forth_star_slash_mod(void *na){ // */MOD  ( n1 n2 n3 -- n4 n5 )
         return;
     }
 
-    dPush(UNSIGNED ((n1 * n2) % n3));
-    dPush(UNSIGNED ((n1 * n2) / n3));
+    __int128_t t = (__int128_t)(int64_t)n1 * (__int128_t)(int64_t)n2;
+    dPush(UNSIGNED (scell)(int64_t)(t % (int64_t)n3));
+    dPush(UNSIGNED (scell)(int64_t)(t / (int64_t)n3));
 }
-void forth_mstar(void *na){     // M*  ( n1 n2 -- d )  signed 32x32->64
+void forth_mstar(void *na){     // M*  ( n1 n2 -- d )  signed 64x64->128
     scell n2 = SIGNED dPop();
     scell n1 = SIGNED dPop();
-    int64_t d = (int64_t)n1 * (int64_t)n2;
+    __int128_t d = (__int128_t)n1 * (__int128_t)n2;
 
-    dPush((cell)(uint64_t)d & (cell)0xFFFFFFFFFFFFFFFFULL);
-    dPush((cell)((uint64_t)d >> 32));
+    dPush((cell)(uint64_t)(unsigned __int128)d);
+    dPush((cell)(uint64_t)((unsigned __int128)d >> 64));
 }
-void forth_umstar(void *na){    // UM*  ( u1 u2 -- ud )  unsigned 32x32->64
+void forth_umstar(void *na){    // UM*  ( u1 u2 -- ud )  unsigned 64x64->128
     uint64_t u2 = (uint64_t)dPop();
     uint64_t u1 = (uint64_t)dPop();
-    uint64_t ud = u1 * u2;
+    __uint128_t ud = (__uint128_t)u1 * (__uint128_t)u2;
 
-    dPush((cell)(ud & 0xFFFFFFFF));
-    dPush((cell)(ud >> 32));
+    dPush((cell)(uint64_t)ud);
+    dPush((cell)(uint64_t)(ud >> 64));
 }
 void forth_fm_slash_mod(void *na){ // FM/MOD  ( d n -- rem quot )  floored
     scell n  = SIGNED dPop();
     cell hi = dPop();
     cell lo = dPop();
-    int64_t d = (int64_t)(((uint64_t)hi << 32) | (uint64_t)lo);
+    __int128_t d = ((__int128_t)(int64_t)hi << 64) | (uint64_t)lo;
 
     if(n == 0){
         fprintf(stderr, "[ERROR]: FM/MOD divide by zero\n");
         return;
     }
 
-    int64_t q = d / (int64_t)n;
-    int64_t r = d % (int64_t)n;
+    __int128_t divisor = (__int128_t)(int64_t)n;
+    int64_t q = (int64_t)(d / divisor);
+    int64_t r = (int64_t)(d % divisor);
 
     // floored: adjust if remainder has wrong sign
-    if(r != 0 && (r < 0) != ((int64_t)n < 0)){
+    if(r != 0 && (r < 0) != (n < 0)){
         q--;
-        r += n;
+        r += (int64_t)n;
     }
 
     dPush(UNSIGNED (scell)r);
@@ -1313,29 +1325,31 @@ void forth_sm_slash_rem(void *na){ // SM/REM  ( d n -- rem quot )  symmetric
     scell n  = SIGNED dPop();
     cell hi = dPop();
     cell lo = dPop();
-    int64_t d = (int64_t)(((uint64_t)hi << 32) | (uint64_t)lo);
+    __int128_t d = ((__int128_t)(int64_t)hi << 64) | (uint64_t)lo;
 
     if(n == 0){
         fprintf(stderr, "[ERROR]: SM/REM divide by zero\n");
         return;
     }
 
-    dPush(UNSIGNED (scell)(d % (int64_t)n));
-    dPush(UNSIGNED (scell)(d / (int64_t)n));
+    __int128_t divisor = (__int128_t)(int64_t)n;
+
+    dPush(UNSIGNED (scell)(int64_t)(d % divisor));
+    dPush(UNSIGNED (scell)(int64_t)(d / divisor));
 }
 void forth_um_slash_mod(void *na){ // UM/MOD  ( ud u -- rem quot )  unsigned
     cell u  = dPop();
     cell hi = dPop();
     cell lo = dPop();
-    uint64_t ud = ((uint64_t)hi << 32) | (uint64_t)lo;
+    __uint128_t ud = ((__uint128_t)hi << 64) | (uint64_t)lo;
 
     if(u == 0){
         fprintf(stderr, "[ERROR]: UM/MOD divide by zero\n");
         return;
     }
 
-    dPush((cell)(ud % u));
-    dPush((cell)(ud / u));
+    dPush((cell)(uint64_t)(ud % u));
+    dPush((cell)(uint64_t)(ud / u));
 }
 void forth_s_to_d(void *na){    // S>D  ( n -- d )
     scell n = SIGNED dPop();
@@ -1525,16 +1539,16 @@ void forth_hash(void *na){      // #  ( ud -- ud )  convert one digit
     cell hi = dPop();
     cell lo = dPop();
 
-    uint64_t ud = ((uint64_t)hi << 32) | (uint64_t)lo;
-    uint64_t digit = ud % (uint64_t)num_base;
+    __uint128_t ud = ((__uint128_t)hi << 64) | (uint64_t)lo;
+    uint64_t digit = (uint64_t)(ud % (uint64_t)num_base);
 
     ud /= (uint64_t)num_base;
     char ch = digit < 10 ? '0' + (char)digit : 'a' + (char)(digit - 10);
     if(state->hbuf_len < sizeof(state->hbuf))
         state->hbuf[state->hbuf_len++] = ch;
 
-    dPush((cell)(ud & 0xFFFFFFFF));
-    dPush((cell)(ud >> 32));
+    dPush((cell)(uint64_t)ud);
+    dPush((cell)(uint64_t)(ud >> 64));
 }
 void forth_hash_s(void *na){    // #S  ( ud -- 0 0 )  convert all digits
     (void)na;
@@ -1677,6 +1691,10 @@ void forth_refill(void *na){    // REFILL  ( -- flag )
 void forth_source_id(void *na){ // SOURCE-ID  ( -- 0|-1|fileid )
     State *state = (State *)na;
 
+    if(state->in_evaluate){
+        dPush((cell)-1);
+        return;
+    }
     dPush(state->input ? (cell)(intptr_t)state->input : 0);
 }
 void forth_evaluate(void *na){  // EVALUATE  ( addr len -- )
@@ -1700,10 +1718,12 @@ void forth_evaluate(void *na){  // EVALUATE  ( addr len -- )
     state->ibuf_len = n;
     state->inp = 0;
     state->input = NULL; // mark as string input
+    state->in_evaluate = 1;
 
     state->list = state->curr = tokenizeSrc(state->ibuf);
     interpLine(state);
 
+    state->in_evaluate = 0;
     memcpy(state->ibuf, saved_ibuf, LINE_SIZE);
     state->ibuf_len = saved_len;
     state->inp = saved_inp;
@@ -1895,27 +1915,44 @@ void forth_to_body(void *na){   // >BODY  ( xt -- a-addr )
 
 void forth_word(void *na){      // WORD  ( char -- c-addr )  parse delimited word
     State *state = (State *)na;
-    char delim = (char)dPop();
-    // skip to next token; for simplicity use state->curr->next
-    if(state->curr->next)
+    unsigned char delim = (unsigned char)dPop();
+
+    const char *src = state->ibuf;
+    size_t srclen = state->ibuf_len;
+    size_t i = (size_t)state->inp;
+
+    // skip leading delimiter characters
+    while(i < srclen && (unsigned char)src[i] == delim)
+        i++;
+
+    size_t wstart = i;
+
+    // scan until next delimiter or end of input
+    while(i < srclen && (unsigned char)src[i] != delim)
+        i++;
+
+    size_t wlen = i - wstart;
+    if(wlen > 255) wlen = 255;
+
+    // skip the trailing delimiter if present
+    if(i < srclen && (unsigned char)src[i] == delim)
+        i++;
+
+    state->inp = (cell)i;
+
+    // advance curr past any tokens consumed by this parse
+    const char *parsed_end = src + i;
+    while(state->curr != NULL && state->curr->start >= src && state->curr->start < parsed_end)
         state->curr = state->curr->next;
-    if(!state->curr){
-        dPush((cell)"");
-        return;
-    }
 
-    size_t len = (size_t)(state->curr->end - state->curr->start);
-    if(len > 255)
-        len = 255;
+    // build counted string in PAD area (64 bytes past HERE)
+    char *out = (char *)&data_space[data_here + 64];
+    out[0] = (char)wlen;
+    if(wlen > 0)
+        memcpy(out + 1, src + wstart, wlen);
+    out[wlen + 1] = '\0';
 
-    // build a counted string in PAD area
-    char *buf = (char *)&data_space[data_here + 64];
-    buf[0] = (char)len;
-    memcpy(buf+1, state->curr->start, len);
-    buf[len+1] = '\0';
-
-    dPush((cell)buf);
-    (void)delim;
+    dPush((cell)out);
 }
 
 void forth_to_number(void *na){ // >NUMBER  ( ud c-addr u1 -- ud c-addr+u2 u2 )
@@ -1923,7 +1960,7 @@ void forth_to_number(void *na){ // >NUMBER  ( ud c-addr u1 -- ud c-addr+u2 u2 )
     cell addr = dPop();
     cell ud_hi = dPop();
     cell ud_lo = dPop();
-    uint64_t ud = ((uint64_t)ud_hi << 32) | ud_lo;
+    __uint128_t ud = ((__uint128_t)ud_hi << 64) | (uint64_t)ud_lo;
     const char *p = (const char *)addr;
 
     size_t i = 0;
@@ -1946,20 +1983,19 @@ void forth_to_number(void *na){ // >NUMBER  ( ud c-addr u1 -- ud c-addr+u2 u2 )
         i++;
     }
 
-    dPush((cell)(ud & 0xFFFFFFFF));
-    dPush((cell)(ud >> 32));
+    dPush((cell)(uint64_t)ud);
+    dPush((cell)(uint64_t)(ud >> 64));
     dPush(addr + (cell)i);
     dPush((cell)(u1 - i));
 }
 
-//  error handling 
+//  error handling
+
+static void forth_quit_fwd(void *na); // forward declaration
 
 void forth_abort(void *na){     // ABORT
-    dClear(); rClear();
     fprintf(stderr, "\x1b[1;93m[ABORT]\x1b[0m\n");
-    // consume remaining tokens
-    State *state = (State *)na;
-    state->curr = NULL;
+    forth_quit_fwd(na);  // ABORT = empty stacks + QUIT
 }
 
 void forth_abort_quote(void *na){ // ABORT"  compilation semantics only (6.1.0680)
@@ -2008,16 +2044,21 @@ void forth_abort_quote(void *na){ // ABORT"  compilation semantics only (6.1.068
     }
 }
 
-void forth_quit(void *na){      // QUIT   abandon current operation, back to prompt
+void forth_quit(void *na){      // QUIT   empty stacks, reset state, restart interpreter
     State *state = (State *)na;
-    state->curr = NULL;
     dClear(); rClear();
-
     state->compileMode = 0;
     state->state_var = 0;
     state->compBody = NULL;
     state->compiling = NULL;
+    state->input = NULL;
+    state->in_evaluate = 0;
+    state->curr = NULL;
+    if(state->quit_jmp_valid)
+        longjmp(state->quit_jmp, 1);
 }
+
+static void forth_quit_fwd(void *na){ forth_quit(na); }
 
 //  :NONAME 
 

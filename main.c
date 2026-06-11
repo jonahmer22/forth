@@ -27,19 +27,23 @@ int main(int argc, char **argv){
 
     registerBuiltins(state);
 
-    // run a file if one was passed on the command line
     char *filename = cliargsSubcommand();
-    if(filename){
+
+    // set up QUIT/ABORT jump point — longjmp lands back here
+    state->quit_jmp_valid = 1;
+    int from_quit = setjmp(state->quit_jmp);
+
+    if(!from_quit && filename){
         evalFile(state, filename);
         arenaDestroy();
         return EXIT_SUCCESS;
     }
 
-    printf("\x1b[1;31mFORTHISH\x1b[0m\n%s\n", DESCRIPTION);
+    if(!from_quit)
+        printf("\x1b[1;31mFORTHISH\x1b[0m\n%s\n", DESCRIPTION);
 
-    // main loop
+    // main REPL loop
     for(; printf("\n\x1b[34m>\x1b[0m "), fgets(state->ibuf, LINE_SIZE, stdin);){
-        // exit case
         state->ibuf[strcspn(state->ibuf, "\n")] = '\0';
         if(strcmp(state->ibuf, "bye") == 0){
             break;
@@ -47,8 +51,6 @@ int main(int argc, char **argv){
 
         state->ibuf_len = strlen(state->ibuf);
         state->inp = 0;
-
-        // tokenListPrint(list);
 
         state->list = state->curr = tokenizeSrc(state->ibuf);
         interpLine(state);

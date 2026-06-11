@@ -125,6 +125,9 @@ State *stateInit(Dictionary *dict, TokenList *list, cell *dstack, size_t *dsp, u
         state->last_created = NULL;
 
         state->hbuf_len = 0;
+
+        state->quit_jmp_valid = 0;
+        state->in_evaluate    = 0;
     }
 
     return state;

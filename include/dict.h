@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <setjmp.h>
 #include "types.h"
 #include "token.h"
 
@@ -131,6 +132,10 @@ typedef struct State{
     // number-output hold area for <# # #S #> HOLD SIGN
     char    hbuf[68];
     size_t  hbuf_len;
+
+    jmp_buf quit_jmp;        // longjmp target for QUIT/ABORT
+    int     quit_jmp_valid;  // 1 once quit_jmp is set
+    int     in_evaluate;     // 1 while inside EVALUATE (SOURCE-ID = -1)
 } State;
 
 State *stateInit(Dictionary *dict, TokenList *list, cell *dstack, size_t *dsp, uint64_t *rstack, size_t *rsp);
