@@ -78,8 +78,8 @@ TokenList *tokenizeSrc(const char *line){
 
         for(; !isWhiteSpace(p) && (*p != '\0'); p++);
 
-        // special strings cases: any 2-char word ending in " (like ." S" C")
-        if((p-start == 2) && (*(p-1) == '\"')){
+        // special strings cases: any word ending in " (like ." S" C" ABORT")
+        if((p-start >= 2) && (*(p-1) == '\"')){
             list = tokenListAppend(list, start, p);
 
             p = skipWhiteSpace(p);

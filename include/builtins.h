@@ -109,6 +109,7 @@ void forth_leave(void *na); // LEAVE
 
 void forth_exit(void *na);    // EXIT
 void forth_recurse(void *na); // RECURSE
+void forth_unloop(void *na);  // UNLOOP
 
 // memory
 

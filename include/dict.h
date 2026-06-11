@@ -23,7 +23,8 @@ typedef enum ActionType{
     ACT_I,         // ( -- i ) copy top of loop frame
     ACT_J,         // ( -- j ) copy outer loop index
     ACT_EXIT,      // return from word early
-    ACT_DOES,      // does> runtime: patch last-created word; num = does-part start index
+    ACT_DOES,        // does> runtime: patch last-created word; num = does-part start index
+    ACT_ABORT_QUOTE, // runtime ABORT": str = message; pops flag, aborts if nonzero
     ACT_EOF
 } ActionType;
 

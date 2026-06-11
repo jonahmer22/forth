@@ -443,6 +443,17 @@ static void execBody(Body *body, void *na){
             case ACT_EXIT:{
                 return;
             }
+            case ACT_ABORT_QUOTE:{
+                cell flag = dPop();
+                if(flag){
+                    fprintf(stderr, "\x1b[1;93m[ABORT]: %s\x1b[0m\n", action[i].str);
+                    dClear(); rClear();
+                    state->curr = NULL;
+                    return;
+                }
+                i++;
+                break;
+            }
             case ACT_DOES:{
                 // patch last_created's body and behavior at runtime
                 size_t does_start = (size_t)action[i].num;
@@ -834,6 +845,12 @@ void forth_leave(void *na){ // LEAVE  ( -- )  force loop exit on next LOOP check
 }
 
 // exit / recurse (compile-only)
+
+void forth_unloop(void *na){ // UNLOOP  ( -- ) R:( loop-sys -- )  discard DO loop frame
+    (void)na;
+    if(rsp >= 2)
+        rsp -= 2;
+}
 
 void forth_exit(void *na){  // EXIT
     State *state = (State *)na;
@@ -1945,25 +1962,47 @@ void forth_abort(void *na){     // ABORT
     state->curr = NULL;
 }
 
-void forth_abort_quote(void *na){ // ABORT"  ( flag -- )  if flag, print and abort
+void forth_abort_quote(void *na){ // ABORT"  compilation semantics only (6.1.0680)
     State *state = (State *)na;
+
     if(state->compileMode){
-        compile_error_not_in_def("ABORT\"");
+        // compile mode: parse string and emit ACT_ABORT_QUOTE
+        if(state->curr->next == NULL){
+            fprintf(stderr, "[ERROR]: ABORT\" missing string\n");
+            return;
+        }
+        state->curr = state->curr->next;
+        const char *start = state->curr->start;
+        const char *end   = state->curr->end;
+        size_t len = (size_t)(end - start);
+
+        if(data_here + len + 1 > DATA_SIZE){
+            fprintf(stderr, "[ERROR]: data space full\n");
+            exit(EXIT_FAILURE);
+        }
+        char *dst = (char *)&data_space[data_here];
+        memcpy(dst, start, len);
+        dst[len] = '\0';
+        data_here += len + 1;
+
+        Action a = {0};
+        a.type = ACT_ABORT_QUOTE;
+        a.str  = dst;
+        bodyAppend(state->compBody, a);
         return;
     }
 
-    // get the string (next token in token stream)
+    // interpretation semantics are undefined by the standard; treat as interpret-mode check
     if(state->curr->next)
         state->curr = state->curr->next;
     else
         return;
 
+    const char *s = state->curr->start;
+    size_t len = (size_t)(state->curr->end - state->curr->start);
     cell flag = dPop();
     if(flag){
-        const char *s = state->curr->start;
-        size_t len = (size_t)(state->curr->end - state->curr->start);
         fprintf(stderr, "\x1b[1;93m[ABORT]: %.*s\x1b[0m\n", (int)len, s);
-
         dClear(); rClear();
         state->curr = NULL;
     }
@@ -2489,6 +2528,9 @@ void registerBuiltins(State *state){
     temp = entryInit("RECURSE", 7, WORD_BUILTIN, forth_recurse, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
+    temp = entryInit("UNLOOP",  6, WORD_BUILTIN, forth_unloop,  FLAG_COMPILE_ONLY, NULL);
+    dictionaryAdd(state->dict, temp);
+
     // memory
 
     temp = entryInit("@",        1, WORD_BUILTIN, forth_fetch,      0, NULL);
@@ -2741,7 +2783,7 @@ void registerBuiltins(State *state){
 
     temp = entryInit("ABORT",    5, WORD_BUILTIN, forth_abort,        0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("ABORT\"",  6, WORD_BUILTIN, forth_abort_quote,  0, NULL);
+    temp = entryInit("ABORT\"",  6, WORD_BUILTIN, forth_abort_quote,  FLAG_IMMEDIATE, NULL);
     dictionaryAdd(state->dict, temp);
     temp = entryInit("QUIT",     4, WORD_BUILTIN, forth_quit,         0, NULL);
     dictionaryAdd(state->dict, temp);
