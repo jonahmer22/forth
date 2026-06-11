@@ -3,6 +3,10 @@
 INSTALL_DIR="/usr/local/bin"
 BINARY="forth"
 
+# update submodules and stuff
+git submodule init
+git submodule update
+
 # build first
 make || exit 1
 
