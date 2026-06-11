@@ -55,7 +55,7 @@ int main(int argc, char **argv){
         state->list = state->curr = tokenizeSrc(state->ibuf);
         interpLine(state);
         // on second thought I really don't think I care
-        // printf(" ok");
+        printf(" ok");
     }
 
     arenaDestroy();

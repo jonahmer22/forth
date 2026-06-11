@@ -12,18 +12,18 @@ A lightweight, Forth 2012 Core-compliant Forth interpreter written in C. Designe
 
 ## Features
 
-- **Forth 2012 Core compliant** - implements the full Core word set including all required control flow, string handling, and numeric output words
-- **Bytecode VM** - words compile to an internal action list; execution is fast and stack-safe
-- **Number literal prefixes** - `#` (decimal), `$` (hex), `%` (binary), `'c'` (character)
-- **Full pictured numeric output** - `<#`, `#`, `#S`, `#>`, `HOLD`, `SIGN`
-- **Exception handling** - `ABORT`, `ABORT"`, `QUIT` with `longjmp`-based REPL recovery
-- **File I/O** - `INCLUDE`, `EVALUATE`, `SOURCE-ID`
-- **Defining words** - `CREATE`, `DOES>`, `:NONAME`, `VARIABLE`, `CONSTANT`, `VALUE`
-- **String words** - `S"`, `."`, `C"`, `.(`, `S\"` (with escape sequences)
-- **Loop constructs** - `DO`, `?DO`, `LOOP`, `+LOOP`, `LEAVE`, `UNLOOP`, `I`, `J`
-- **Case statement** - `CASE`, `OF`, `ENDOF`, `ENDCASE`
-- **Arena allocator** - all dictionary and compilation memory managed in a single arena; zero fragmentation
-- **ANSI color output** - error messages and REPL prompt use terminal colors
+- **Forth 2012 Core compliant**: implements the full Core word set including all required control flow, string handling, and numeric output words
+- **Bytecode VM**: words compile to an internal action list; execution is fast and stack-safe
+- **Number literal prefixes**: `#` (decimal), `$` (hex), `%` (binary), `'c'` (character)
+- **Full pictured numeric output**: `<#`, `#`, `#S`, `#>`, `HOLD`, `SIGN`
+- **Exception handling**: `ABORT`, `ABORT"`, `QUIT` with `longjmp`-based REPL recovery
+- **File I/O**: `INCLUDE`, `EVALUATE`, `SOURCE-ID`
+- **Defining words**: `CREATE`, `DOES>`, `:NONAME`, `VARIABLE`, `CONSTANT`, `VALUE`
+- **String words**: `S"`, `."`, `C"`, `.(`, `S\"` (with escape sequences)
+- **Loop constructs**: `DO`, `?DO`, `LOOP`, `+LOOP`, `LEAVE`, `UNLOOP`, `I`, `J`
+- **Case statement**: `CASE`, `OF`, `ENDOF`, `ENDCASE`
+- **Arena allocator**: all dictionary and compilation memory managed in a single arena; zero fragmentation
+- **ANSI color output**: error messages and REPL prompt use terminal colors
 
 ---
 
