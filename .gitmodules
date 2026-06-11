@@ -1,6 +1,0 @@
-[submodule "arena"]
-	path = arena
-	url = git@pi:repos/arena
-[submodule "cliargs"]
-	path = cliargs
-	url = git@pi:repos/cliargs
