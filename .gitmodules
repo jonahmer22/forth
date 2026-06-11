@@ -1,0 +1,6 @@
+[submodule "arena"]
+	path = arena
+	url = https://github.com/jonahmer22/arena
+[submodule "cliargs"]
+	path = cliargs
+	url = https://github.com/jonahmer22/cliargs
