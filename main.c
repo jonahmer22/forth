@@ -1,13 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "arena/arena.h"
+#include "include/dict.h"
 #include "include/types.h"
 #include "include/stack.h"
 #include "include/token.h"
-#include "include/dict.h"
-#include "include/builtins.h"
-#include "arena/arena.h"
 #include "cliargs/cliargs.h"
+#include "include/builtins.h"
 
 // version / description
 
@@ -29,7 +29,7 @@ int main(int argc, char **argv){
 
     char *filename = cliargsSubcommand();
 
-    // set up QUIT/ABORT jump point — longjmp lands back here
+    // set up QUIT/ABORT jump point longjmp lands back here
     state->quit_jmp_valid = 1;
     int from_quit = setjmp(state->quit_jmp);
 
@@ -54,7 +54,8 @@ int main(int argc, char **argv){
 
         state->list = state->curr = tokenizeSrc(state->ibuf);
         interpLine(state);
-        printf(" ok");
+        // on second thought I really don't think I care
+        // printf(" ok");
     }
 
     arenaDestroy();
