@@ -11,7 +11,7 @@
 
 // version / description
 
-#define VERSION "0.1.0"
+#define VERSION "1.0.0"
 #define DESCRIPTION "A simplistic FORTH implementation made to be as dead simple as I can think of making a it."
 
 int main(int argc, char **argv){
