@@ -498,6 +498,17 @@ static void execBody(Body *body, void *na){
             case ACT_EXIT:{
                 return;
             }
+            case ACT_COMPILE_WORD:{
+                if(state->compileMode && state->compBody != NULL){
+                    Action ca = {0};
+                    ca.type = ACT_WORD;
+                    ca.word = action[i].word;
+
+                    bodyAppend(state->compBody, ca);
+                }
+                i++;
+                break;
+            }
             case ACT_LEAVE:{
                 if(rsp >= 2) rsp -= 2; // discard loop frame
                 i = (size_t)action[i].num; // branch past LOOP
@@ -645,6 +656,8 @@ static void compileToken(State *state){
     }
 }
 
+void forth_semicolon(void *na); // forward declaration
+
 void userword(void *na){// : and ;
     State *state = (State *)na;
 
@@ -681,34 +694,49 @@ void userword(void *na){// : and ;
         while(state->curr == NULL){
             if(!stateRefill(state)){
                 fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tUnexpected EOF in word definition.\n", 0x5332);
-                goto done;
+                // emergency finalize
+                Action eof_act = {0};
+                eof_act.type = ACT_EOF;
+
+                bodyAppend(state->compBody, eof_act);
+                dictionaryAdd(state->dict, state->compiling);
+
+                state->compileMode = 0; state->state_var = 0;
+                state->compiling = NULL; state->compBody = NULL;
+
+                return;
             }
             state->curr = tokenizeSrc(state->ibuf);
         }
 
-        // check for end of definition (only when in compile mode)
-        if(state->state_var != 0 && state->curr->end - state->curr->start == 1 && *state->curr->start == ';'){
-            state->curr = state->curr->next; // consume ;
-            break;
-        }
-
         compileToken(state);
+
+        // forth_semicolon (called via IMMEDIATE ';') nulls compiling when done
+        if(state->compiling == NULL)
+            return;
+
         state->curr = state->curr->next;
     }
+}
 
-done:
-    {   // terminate body
+void forth_semicolon(void *na){ // ;  end a word definition
+    State *state = (State *)na;
+    if(!state->compileMode || state->state_var == 0){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\t';' outside a word definition.\n", 0x5334);
+        return;
+    }
+
     Action eof_act = {0};
     eof_act.type = ACT_EOF;
     bodyAppend(state->compBody, eof_act);
-    }
 
-    dictionaryAdd(state->dict, stub);
+    dictionaryAdd(state->dict, state->compiling);
 
     state->compileMode = 0;
-    state->state_var = 0;
-    state->compiling = NULL;
-    state->compBody = NULL;
+    state->state_var   = 0;
+    state->compiling   = NULL;
+    state->compBody    = NULL;
+    // leave state->curr pointing at ';' so the caller's loop increment moves past it
 }
 
 // helper used by immediate words
@@ -1956,7 +1984,13 @@ void forth_postpone(void *na){  // POSTPONE  compile compilation semantics of ne
     }
 
     Action a = {0};
-    a.type = ACT_WORD;
+    if(word->flags & FLAG_IMMEDIATE){
+        // immediate word: compile a call to its behavior (runs at compile time)
+        a.type = ACT_WORD;
+    } else {
+        // non-immediate word: compile an instruction that, when executed, compiles the word
+        a.type = ACT_COMPILE_WORD;
+    }
     a.word = word;
 
     bodyAppend(state->compBody, a);
@@ -2209,34 +2243,24 @@ void forth_noname(void *na){    // :NONAME  ( -- xt )
     // advance past the :NONAME token itself
     state->curr = state->curr->next;
 
-    // compilation loop mirrors userword (no name token consumed)
+    // compilation loop: forth_semicolon (IMMEDIATE) handles finalization
     for(;;){
         while(state->curr == NULL){
             if(!stateRefill(state)){
                 fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tUnexpected EOF in :NONAME.\n", 0x5333);
-                goto noname_done;
+                forth_semicolon(state);
+                dPush((cell)stub);
+                return;
             }
             state->curr = tokenizeSrc(state->ibuf);
         }
 
-        if(state->curr->end - state->curr->start == 1 && *state->curr->start == ';'){
-            // leave curr pointing AT ';' so caller's increment moves past it
-            break;
-        }
-
         compileToken(state);
+
+        if(state->compiling == NULL) break; // ; was processed
+
         state->curr = state->curr->next;
     }
-
-noname_done:;
-    Action eof_act = {0};
-    eof_act.type = ACT_EOF;
-    bodyAppend(state->compBody, eof_act);
-
-    state->compileMode = 0;
-    state->state_var = 0;
-    state->compiling = NULL;
-    state->compBody = NULL;
 
     dPush((cell)stub);  // push xt after compilation
 }
@@ -2686,6 +2710,9 @@ void registerBuiltins(State *state){
     // word definition
 
     temp = entryInit(":", 1, WORD_BUILTIN, userword, 0, NULL);
+    dictionaryAdd(state->dict, temp);
+
+    temp = entryInit(";", 1, WORD_BUILTIN, forth_semicolon, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
     // return stack
