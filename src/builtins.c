@@ -12,7 +12,7 @@
 #include "../arena/arena.h"
 
 // number base (changed by HEX / DECIMAL)
-int num_base = 10;
+cell num_base = 10;
 
 // data space for VARIABLE / ALLOT / HERE
 uint8_t data_space[DATA_SIZE];
@@ -502,7 +502,10 @@ static void doesRuntime(void *na){
 void runUserWord(void *na){
     State *state = (State *)na;
     Entry *word = dictionaryLookup(state->dict, state->curr->start, (size_t)(state->curr->end-state->curr->start));
-
+    if(word == NULL){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\trunUserWord: word not found in dict.\n", 0x5900);
+        return;
+    }
     execBody(word->body, na);
 }
 
@@ -803,6 +806,7 @@ void forth_do(void *na){    // DO  ( limit start -- )
     a.num = 0; // exit address, patched by LOOP
 
     bodyAppend(state->compBody, a);
+    state->cpstack[state->csp++] = (size_t)-1;               // no skip-branch
     state->cpstack[state->csp++] = state->compBody->used - 1; // index of DO action
 }
 
@@ -813,14 +817,18 @@ void forth_loop(void *na){  // LOOP
         return;
     }
 
-    size_t do_idx = state->cpstack[--state->csp];
+    size_t do_idx  = state->cpstack[--state->csp];
+    size_t br_idx  = state->cpstack[--state->csp]; // SIZE_MAX for DO, real idx for ?DO
 
     Action a = {0};
     a.type = ACT_LOOP;
     a.num = (cell)(do_idx + 1); // branch back to instruction after DO
 
     bodyAppend(state->compBody, a);
-    state->compBody->actions[do_idx].num = (cell)state->compBody->used; // DO exit = after LOOP
+    size_t after_loop = state->compBody->used;
+    state->compBody->actions[do_idx].num = (cell)after_loop; // DO exit = after LOOP
+    if(br_idx != (size_t)-1)
+        state->compBody->actions[br_idx].num = (cell)after_loop; // ?DO skip branch
 }
 
 void forth_plus_loop(void *na){ // +LOOP  ( n -- )
@@ -830,14 +838,18 @@ void forth_plus_loop(void *na){ // +LOOP  ( n -- )
         return;
     }
 
-    size_t do_idx = state->cpstack[--state->csp];
+    size_t do_idx  = state->cpstack[--state->csp];
+    size_t br_idx  = state->cpstack[--state->csp];
 
     Action a = {0};
     a.type = ACT_PLUS_LOOP;
     a.num = (cell)(do_idx + 1);
 
     bodyAppend(state->compBody, a);
-    state->compBody->actions[do_idx].num = (cell)state->compBody->used;
+    size_t after_loop = state->compBody->used;
+    state->compBody->actions[do_idx].num = (cell)after_loop;
+    if(br_idx != (size_t)-1)
+        state->compBody->actions[br_idx].num = (cell)after_loop;
 }
 
 void forth_i(void *na){     // I  ( -- index )
@@ -1007,7 +1019,10 @@ void forth_tick(void *na){  // '  ( -- xt )
 
 void forth_execute(void *na){ // EXECUTE  ( xt -- )
     Entry *word = (Entry *)dPop();
-    word->behavior(na);
+    if(word->type == WORD_USERDEF)
+        execBody(word->body, na);
+    else
+        word->behavior(na);
 }
 
 // number base
@@ -1018,8 +1033,8 @@ void forth_hex(void *na){
 void forth_decimal(void *na){
     num_base = 10;
 }
-void forth_base(void *na){  // BASE  ( -- base )
-    dPush((cell)num_base);
+void forth_base(void *na){  // BASE  ( -- a-addr )
+    dPush((cell)&num_base);
 }
 
 // misc i/o
@@ -1158,19 +1173,26 @@ void forth_paren(void *na){         // (  inline comment  skip until )
 
 void forth_dot_paren(void *na){     // .(  print until )
     State *state = (State *)na;
-    while(state->curr != NULL){
-        size_t len = (size_t)(state->curr->end - state->curr->start);
-        int ends = (len > 0 && state->curr->start[len-1] == ')');
-        size_t print_len = ends ? len - 1 : len;
-
-        printf("%.*s", (int)print_len, state->curr->start);
-        if(ends)
-            return; // leave curr here; for-loop advances past
-
-        state->curr = state->curr->next;
-
-        putc(' ', stdout);
+    // The .( token is already in state->curr; the content starts at the next token
+    // But .( may be written as ".( hello)" so we need to handle both token-based
+    // and raw-buffer parsing. Use the raw input buffer for accurate parsing.
+    const char *src = state->ibuf;
+    size_t srclen = state->ibuf_len;
+    // Find '(' position: start just after the ".(" word in the input buffer
+    size_t i = (size_t)(state->curr->end - src);
+    // skip space after .(
+    while(i < srclen && src[i] == ' ') i++;
+    // print until ')'
+    while(i < srclen && src[i] != ')'){
+        putc(src[i++], stdout);
     }
+    // skip the ')' and update inp
+    if(i < srclen) i++;
+    state->inp = (cell)i;
+    // advance curr past all tokens consumed (up to and including the one containing ')')
+    while(state->curr->next != NULL &&
+          state->curr->next->start < src + i)
+        state->curr = state->curr->next;
 }
 
 //  stack ops 
@@ -1644,7 +1666,41 @@ void forth_s_quote_compile(void *na){
     bodyAppend(state->compBody, a);
 }
 
-//  I/O 
+void forth_c_quote(void *na){   // C"  ( -- c-addr )  compile-only counted string literal
+    State *state = (State *)na;
+    if(!state->compileMode){
+        fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tC\" is compile-only.\n", 0x5500);
+        return;
+    }
+    if(state->curr->next == NULL){
+        Action a = {0}; a.type = ACT_NUM; a.num = (cell)"";
+        bodyAppend(state->compBody, a);
+        return;
+    }
+    state->curr = state->curr->next;
+    const char *start = state->curr->start;
+    const char *end   = state->curr->end;
+    size_t len = (size_t)(end - start);
+
+    if(data_here + len + 2 > DATA_SIZE){
+        fprintf(stderr, "[ERROR]: data space full\n");
+        exit(EXIT_FAILURE);
+    }
+    // counted string: length byte + chars + NUL
+    char *dst = (char *)&data_space[data_here];
+    dst[0] = (char)(len > 255 ? 255 : len);
+    memcpy(dst + 1, start, len);
+    dst[len + 1] = '\0';
+    data_here += len + 2;
+
+    Action a = {0};
+    a.type = ACT_NUM;
+    a.num = (cell)dst;
+
+    bodyAppend(state->compBody, a);
+}
+
+//  I/O
 
 void forth_accept(void *na){    // ACCEPT  ( addr len -- actual )
     cell maxlen = dPop();
@@ -1940,9 +1996,9 @@ void forth_word(void *na){      // WORD  ( char -- c-addr )  parse delimited wor
 
     state->inp = (cell)i;
 
-    // advance curr past any tokens consumed by this parse
+    // advance curr to the last consumed token so interpLine's increment moves past it
     const char *parsed_end = src + i;
-    while(state->curr != NULL && state->curr->start >= src && state->curr->start < parsed_end)
+    while(state->curr->next != NULL && state->curr->next->start >= src && state->curr->next->start < parsed_end)
         state->curr = state->curr->next;
 
     // build counted string in PAD area (64 bytes past HERE)
@@ -2070,15 +2126,42 @@ void forth_noname(void *na){    // :NONAME  ( -- xt )
     state->state_var = 1;
     state->compBody = body;
 
-    // create anonymous entry with empty name
     Entry *stub = entryInit("", 0, WORD_USERDEF, runUserWord, 0, body);
     state->compiling = stub;
 
-    dPush((cell)stub);  // push xt before compiling
+    // advance past the :NONAME token itself
+    state->curr = state->curr->next;
 
-    // compilation continues  the user writes code then ;
-    // but we need to process it now (similar to userword without consuming a name)
-    // just return; ] is now active and the main loop will compile tokens
+    // compilation loop mirrors userword (no name token consumed)
+    for(;;){
+        while(state->curr == NULL){
+            if(!stateRefill(state)){
+                fprintf(stderr, "\x1b[1;93m[ERROR 0x%04X]:\x1b[0m\tUnexpected EOF in :NONAME.\n", 0x5333);
+                goto noname_done;
+            }
+            state->curr = tokenizeSrc(state->ibuf);
+        }
+
+        if(state->curr->end - state->curr->start == 1 && *state->curr->start == ';'){
+            state->curr = state->curr->next;
+            break;
+        }
+
+        compileToken(state);
+        state->curr = state->curr->next;
+    }
+
+noname_done:;
+    Action eof_act = {0};
+    eof_act.type = ACT_EOF;
+    bodyAppend(state->compBody, eof_act);
+
+    state->compileMode = 0;
+    state->state_var = 0;
+    state->compiling = NULL;
+    state->compBody = NULL;
+
+    dPush((cell)stub);  // push xt after compilation
 }
 
 //  CASE/OF/ENDOF/ENDCASE 
@@ -2316,24 +2399,34 @@ void forth_qdo(void *na){       // ?DO  ( limit start -- )  skip if equal
         return;
     }
 
-    // emit: 2DUP = BRANCH0(exit) DO
-    // at runtime: if limit==start skip the loop entirely
-    // We emit a runtime check: push limit==start flag, branch0 to after LOOP if equal
-    // Then emit ACT_DO
+    // Compile: 2DUP <> BRANCH0(after_loop) DO ... LOOP
+    // Runtime: if limit==start, <> yields 0, BRANCH0 skips the loop.
+    Entry *twodup_e = dictionaryLookup(state->dict, "2DUP", 4);
+    Entry *neq_e = dictionaryLookup(state->dict, "<>",   2);
+
+    Action w = {0};
+    w.type = ACT_WORD;
+    w.word = twodup_e;
+    bodyAppend(state->compBody, w);
+
+    w.word = neq_e;
+    bodyAppend(state->compBody, w);
+
+    // BRANCH0: branch past loop when limit==start (<> gave 0)
     Action br = {0};
     br.type = ACT_BRANCH0;
     br.num = 0; // patched by LOOP
     bodyAppend(state->compBody, br);
     size_t br_idx = state->compBody->used - 1;
 
-    // emit ACT_DO
+    // ACT_DO sets up the loop frame; consumes (limit start)
     Action do_act = {0};
     do_act.type = ACT_DO;
-    do_act.num = 0;
+    do_act.num = 0; // exit address patched by LOOP
     bodyAppend(state->compBody, do_act);
     size_t do_idx = state->compBody->used - 1;
 
-    // push both on cpstack: br_idx first (for ?DO skip), then do_idx (for LOOP)
+    // cpstack layout matches DO: br_idx below, do_idx on top
     state->cpstack[state->csp++] = br_idx;
     state->cpstack[state->csp++] = do_idx;
 }
@@ -2515,7 +2608,7 @@ void registerBuiltins(State *state){
 
     // conditionals (immediate + compile-only)
 
-    temp = entryInit("IF",   2, WORD_BUILTIN, forth_if,   FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("IF", 2, WORD_BUILTIN, forth_if, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
     temp = entryInit("ELSE", 4, WORD_BUILTIN, forth_else, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
@@ -2526,36 +2619,36 @@ void registerBuiltins(State *state){
 
     // loops (immediate + compile-only)
 
-    temp = entryInit("BEGIN",  5, WORD_BUILTIN, forth_begin,     FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("BEGIN", 5, WORD_BUILTIN, forth_begin, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("UNTIL",  5, WORD_BUILTIN, forth_until,     FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("UNTIL", 5, WORD_BUILTIN, forth_until, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("AGAIN",  5, WORD_BUILTIN, forth_again,     FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("AGAIN", 5, WORD_BUILTIN, forth_again, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("WHILE",  5, WORD_BUILTIN, forth_while,     FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("WHILE", 5, WORD_BUILTIN, forth_while, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("REPEAT", 6, WORD_BUILTIN, forth_repeat,    FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("REPEAT", 6, WORD_BUILTIN, forth_repeat, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("DO",     2, WORD_BUILTIN, forth_do,        FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("DO", 2, WORD_BUILTIN, forth_do, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("LOOP",   4, WORD_BUILTIN, forth_loop,      FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("LOOP", 4, WORD_BUILTIN, forth_loop, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("+LOOP",  5, WORD_BUILTIN, forth_plus_loop, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("+LOOP", 5, WORD_BUILTIN, forth_plus_loop, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
     // loop helpers (regular builtins, usable anywhere)
 
-    temp = entryInit("I",     1, WORD_BUILTIN, forth_i,     0, NULL);
+    temp = entryInit("I", 1, WORD_BUILTIN, forth_i, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("J",     1, WORD_BUILTIN, forth_j,     0, NULL);
+    temp = entryInit("J", 1, WORD_BUILTIN, forth_j, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     temp = entryInit("LEAVE", 5, WORD_BUILTIN, forth_leave, 0, NULL);
@@ -2563,47 +2656,47 @@ void registerBuiltins(State *state){
 
     // exit / recurse (immediate + compile-only)
 
-    temp = entryInit("EXIT",    4, WORD_BUILTIN, forth_exit,    FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("EXIT", 4, WORD_BUILTIN, forth_exit, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
     temp = entryInit("RECURSE", 7, WORD_BUILTIN, forth_recurse, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("UNLOOP",  6, WORD_BUILTIN, forth_unloop,  FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("UNLOOP", 6, WORD_BUILTIN, forth_unloop, FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
     // memory
 
-    temp = entryInit("@",        1, WORD_BUILTIN, forth_fetch,      0, NULL);
+    temp = entryInit("@", 1, WORD_BUILTIN, forth_fetch, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("!",        1, WORD_BUILTIN, forth_store,      0, NULL);
+    temp = entryInit("!", 1, WORD_BUILTIN, forth_store, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("+!",       2, WORD_BUILTIN, forth_plus_store, 0, NULL);
+    temp = entryInit("+!", 2, WORD_BUILTIN, forth_plus_store, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("?",        1, WORD_BUILTIN, forth_question,   0, NULL);
+    temp = entryInit("?", 1, WORD_BUILTIN, forth_question, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("CELLS",    5, WORD_BUILTIN, forth_cells,      0, NULL);
+    temp = entryInit("CELLS", 5, WORD_BUILTIN, forth_cells, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("ALLOT",    5, WORD_BUILTIN, forth_allot,      0, NULL);
+    temp = entryInit("ALLOT", 5, WORD_BUILTIN, forth_allot, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("HERE",     4, WORD_BUILTIN, forth_here,       0, NULL);
+    temp = entryInit("HERE", 4, WORD_BUILTIN, forth_here, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("VARIABLE", 8, WORD_BUILTIN, forth_variable,   0, NULL);
+    temp = entryInit("VARIABLE", 8, WORD_BUILTIN, forth_variable, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("CONSTANT", 8, WORD_BUILTIN, forth_constant,   0, NULL);
+    temp = entryInit("CONSTANT", 8, WORD_BUILTIN, forth_constant, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     // execution tokens
 
-    temp = entryInit("'",       1, WORD_BUILTIN, forth_tick,    0, NULL);
+    temp = entryInit("'", 1, WORD_BUILTIN, forth_tick, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     temp = entryInit("EXECUTE", 7, WORD_BUILTIN, forth_execute, 0, NULL);
@@ -2611,18 +2704,18 @@ void registerBuiltins(State *state){
 
     // number base
 
-    temp = entryInit("HEX",     3, WORD_BUILTIN, forth_hex,     0, NULL);
+    temp = entryInit("HEX", 3, WORD_BUILTIN, forth_hex, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     temp = entryInit("DECIMAL", 7, WORD_BUILTIN, forth_decimal, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
-    temp = entryInit("BASE",    4, WORD_BUILTIN, forth_base,    0, NULL);
+    temp = entryInit("BASE", 4, WORD_BUILTIN, forth_base, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     // misc i/o
 
-    temp = entryInit("KEY",  3, WORD_BUILTIN, forth_key,  0, NULL);
+    temp = entryInit("KEY", 3, WORD_BUILTIN, forth_key, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     temp = entryInit("TYPE", 4, WORD_BUILTIN, forth_type, 0, NULL);
@@ -2630,7 +2723,7 @@ void registerBuiltins(State *state){
 
     // file evaluation
 
-    temp = entryInit("INCLUDE",  7, WORD_BUILTIN, forth_include,  0, NULL);
+    temp = entryInit("INCLUDE", 7, WORD_BUILTIN, forth_include, 0, NULL);
     dictionaryAdd(state->dict, temp);
     temp = entryInit("INCLUDED", 8, WORD_BUILTIN, forth_included, 0, NULL);
     dictionaryAdd(state->dict, temp);
@@ -2646,130 +2739,132 @@ void registerBuiltins(State *state){
 
     // stack extras
 
-    temp = entryInit("?DUP",  4, WORD_BUILTIN, forth_qdup,    0, NULL);
+    temp = entryInit("?DUP", 4, WORD_BUILTIN, forth_qdup, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("MAX",   3, WORD_BUILTIN, forth_max,     0, NULL);
+    temp = entryInit("MAX", 3, WORD_BUILTIN, forth_max, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("MIN",   3, WORD_BUILTIN, forth_min,     0, NULL);
+    temp = entryInit("MIN", 3, WORD_BUILTIN, forth_min, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("2OVER", 5, WORD_BUILTIN, forth_2over,   0, NULL);
+    temp = entryInit("2OVER", 5, WORD_BUILTIN, forth_2over, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("2SWAP", 5, WORD_BUILTIN, forth_2swap,   0, NULL);
+    temp = entryInit("2SWAP", 5, WORD_BUILTIN, forth_2swap, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("2!",    2, WORD_BUILTIN, forth_2store,  0, NULL);
+    temp = entryInit("2!", 2, WORD_BUILTIN, forth_2store, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("2@",    2, WORD_BUILTIN, forth_2fetch,  0, NULL);
+    temp = entryInit("2@", 2, WORD_BUILTIN, forth_2fetch, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("PICK",  4, WORD_BUILTIN, forth_pick,    0, NULL);
+    temp = entryInit("PICK", 4, WORD_BUILTIN, forth_pick, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("ROLL",  4, WORD_BUILTIN, forth_roll,    0, NULL);
+    temp = entryInit("ROLL", 4, WORD_BUILTIN, forth_roll, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("2>R",   3, WORD_BUILTIN, forth_2tor,    0, NULL);
+    temp = entryInit("2>R", 3, WORD_BUILTIN, forth_2tor, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("2R>",   3, WORD_BUILTIN, forth_2rfrom,  0, NULL);
+    temp = entryInit("2R>", 3, WORD_BUILTIN, forth_2rfrom, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("2R@",   3, WORD_BUILTIN, forth_2rfetch, 0, NULL);
+    temp = entryInit("2R@", 3, WORD_BUILTIN, forth_2rfetch, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     // arithmetic extras
 
-    temp = entryInit("*/",      2, WORD_BUILTIN, forth_star_slash,     0, NULL);
+    temp = entryInit("*/", 2, WORD_BUILTIN, forth_star_slash, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("*/MOD",   5, WORD_BUILTIN, forth_star_slash_mod, 0, NULL);
+    temp = entryInit("*/MOD", 5, WORD_BUILTIN, forth_star_slash_mod, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("M*",      2, WORD_BUILTIN, forth_mstar,          0, NULL);
+    temp = entryInit("M*", 2, WORD_BUILTIN, forth_mstar, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("UM*",     3, WORD_BUILTIN, forth_umstar,         0, NULL);
+    temp = entryInit("UM*", 3, WORD_BUILTIN, forth_umstar, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("FM/MOD",  6, WORD_BUILTIN, forth_fm_slash_mod,   0, NULL);
+    temp = entryInit("FM/MOD", 6, WORD_BUILTIN, forth_fm_slash_mod, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("SM/REM",  6, WORD_BUILTIN, forth_sm_slash_rem,   0, NULL);
+    temp = entryInit("SM/REM", 6, WORD_BUILTIN, forth_sm_slash_rem, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("UM/MOD",  6, WORD_BUILTIN, forth_um_slash_mod,   0, NULL);
+    temp = entryInit("UM/MOD", 6, WORD_BUILTIN, forth_um_slash_mod, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("S>D",     3, WORD_BUILTIN, forth_s_to_d,         0, NULL);
+    temp = entryInit("S>D", 3, WORD_BUILTIN, forth_s_to_d, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     // comparisons / booleans
 
-    temp = entryInit("0<>",   3, WORD_BUILTIN, forth_zero_ne,   0, NULL);
+    temp = entryInit("0<>", 3, WORD_BUILTIN, forth_zero_ne, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("U<",    2, WORD_BUILTIN, forth_u_less,    0, NULL);
+    temp = entryInit("U<", 2, WORD_BUILTIN, forth_u_less, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("U>",    2, WORD_BUILTIN, forth_u_greater, 0, NULL);
+    temp = entryInit("U>", 2, WORD_BUILTIN, forth_u_greater, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("WITHIN",6, WORD_BUILTIN, forth_within,    0, NULL);
+    temp = entryInit("WITHIN",6, WORD_BUILTIN, forth_within, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("FALSE", 5, WORD_BUILTIN, forth_false,     0, NULL);
+    temp = entryInit("FALSE", 5, WORD_BUILTIN, forth_false, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("TRUE",  4, WORD_BUILTIN, forth_true,      0, NULL);
+    temp = entryInit("TRUE", 4, WORD_BUILTIN, forth_true, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("BL",    2, WORD_BUILTIN, forth_bl,        0, NULL);
+    temp = entryInit("BL", 2, WORD_BUILTIN, forth_bl, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     // memory extras
 
-    temp = entryInit("C@",      2, WORD_BUILTIN, forth_cfetch,    0, NULL);
+    temp = entryInit("C@", 2, WORD_BUILTIN, forth_cfetch, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("C!",      2, WORD_BUILTIN, forth_cstore,    0, NULL);
+    temp = entryInit("C!", 2, WORD_BUILTIN, forth_cstore, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("C,",      2, WORD_BUILTIN, forth_ccomma,    0, NULL);
+    temp = entryInit("C,", 2, WORD_BUILTIN, forth_ccomma, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit(",",       1, WORD_BUILTIN, forth_comma,     0, NULL);
+    temp = entryInit(",", 1, WORD_BUILTIN, forth_comma, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("CELL+",   5, WORD_BUILTIN, forth_cell_plus, 0, NULL);
+    temp = entryInit("CELL+", 5, WORD_BUILTIN, forth_cell_plus, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("CHAR+",   5, WORD_BUILTIN, forth_char_plus, 0, NULL);
+    temp = entryInit("CHAR+", 5, WORD_BUILTIN, forth_char_plus, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("CHARS",   5, WORD_BUILTIN, forth_chars,     0, NULL);
+    temp = entryInit("CHARS", 5, WORD_BUILTIN, forth_chars, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("ALIGNED", 7, WORD_BUILTIN, forth_aligned,   0, NULL);
+    temp = entryInit("ALIGNED", 7, WORD_BUILTIN, forth_aligned, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("ALIGN",   5, WORD_BUILTIN, forth_align,     0, NULL);
+    temp = entryInit("ALIGN", 5, WORD_BUILTIN, forth_align, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("FILL",    4, WORD_BUILTIN, forth_fill,      0, NULL);
+    temp = entryInit("FILL", 4, WORD_BUILTIN, forth_fill, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("MOVE",    4, WORD_BUILTIN, forth_move,      0, NULL);
+    temp = entryInit("MOVE", 4, WORD_BUILTIN, forth_move, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("ERASE",   5, WORD_BUILTIN, forth_erase,     0, NULL);
+    temp = entryInit("ERASE", 5, WORD_BUILTIN, forth_erase, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("PAD",     3, WORD_BUILTIN, forth_pad,       0, NULL);
+    temp = entryInit("PAD", 3, WORD_BUILTIN, forth_pad, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("UNUSED",  6, WORD_BUILTIN, forth_unused,    0, NULL);
+    temp = entryInit("UNUSED", 6, WORD_BUILTIN, forth_unused, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("CREATE",  6, WORD_BUILTIN, forth_create,    0, NULL);
+    temp = entryInit("CREATE", 6, WORD_BUILTIN, forth_create, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("DOES>",   5, WORD_BUILTIN, forth_does,      FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("DOES>", 5, WORD_BUILTIN, forth_does, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
     // character / string
 
-    temp = entryInit("CHAR",  4, WORD_BUILTIN, forth_char,           0, NULL);
+    temp = entryInit("CHAR", 4, WORD_BUILTIN, forth_char, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("COUNT", 5, WORD_BUILTIN, forth_count,          0, NULL);
+    temp = entryInit("COUNT", 5, WORD_BUILTIN, forth_count, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("S\"",   2, WORD_BUILTIN, forth_s_quote_compile, FLAG_IMMEDIATE, NULL);
+    temp = entryInit("S\"", 2, WORD_BUILTIN, forth_s_quote_compile, FLAG_IMMEDIATE, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit(".R",    2, WORD_BUILTIN, forth_dot_r,           0, NULL);
+    temp = entryInit("C\"", 2, WORD_BUILTIN, forth_c_quote, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("U.R",   3, WORD_BUILTIN, forth_u_dot_r,         0, NULL);
+    temp = entryInit(".R", 2, WORD_BUILTIN, forth_dot_r, 0, NULL);
+    dictionaryAdd(state->dict, temp);
+    temp = entryInit("U.R", 3, WORD_BUILTIN, forth_u_dot_r, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     // number formatting
 
-    temp = entryInit("HOLD", 4, WORD_BUILTIN, forth_hold,         0, NULL);
+    temp = entryInit("HOLD", 4, WORD_BUILTIN, forth_hold, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("HOLDS",5, WORD_BUILTIN, forth_holds,        0, NULL);
+    temp = entryInit("HOLDS", 5, WORD_BUILTIN, forth_holds, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("SIGN", 4, WORD_BUILTIN, forth_sign,         0, NULL);
+    temp = entryInit("SIGN", 4, WORD_BUILTIN, forth_sign, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("<#",   2, WORD_BUILTIN, forth_less_hash,    0, NULL);
+    temp = entryInit("<#", 2, WORD_BUILTIN, forth_less_hash, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("#",    1, WORD_BUILTIN, forth_hash,         0, NULL);
+    temp = entryInit("#", 1, WORD_BUILTIN, forth_hash, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("#S",   2, WORD_BUILTIN, forth_hash_s,       0, NULL);
+    temp = entryInit("#S", 2, WORD_BUILTIN, forth_hash_s, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("#>",   2, WORD_BUILTIN, forth_hash_greater, 0, NULL);
+    temp = entryInit("#>", 2, WORD_BUILTIN, forth_hash_greater, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     // i/o extras
@@ -2779,79 +2874,79 @@ void registerBuiltins(State *state){
 
     // interpreter state
 
-    temp = entryInit("STATE",     5, WORD_BUILTIN, forth_state,     0, NULL);
+    temp = entryInit("STATE", 5, WORD_BUILTIN, forth_state, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("SOURCE",    6, WORD_BUILTIN, forth_source,    0, NULL);
+    temp = entryInit("SOURCE", 6, WORD_BUILTIN, forth_source, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit(">IN",       3, WORD_BUILTIN, forth_to_in,     0, NULL);
+    temp = entryInit(">IN", 3, WORD_BUILTIN, forth_to_in, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("REFILL",    6, WORD_BUILTIN, forth_refill,    0, NULL);
+    temp = entryInit("REFILL", 6, WORD_BUILTIN, forth_refill, 0, NULL);
     dictionaryAdd(state->dict, temp);
     temp = entryInit("SOURCE-ID", 9, WORD_BUILTIN, forth_source_id, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("EVALUATE",  8, WORD_BUILTIN, forth_evaluate,  0, NULL);
+    temp = entryInit("EVALUATE", 8, WORD_BUILTIN, forth_evaluate, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     // compile-mode words
 
-    temp = entryInit("[",         1, WORD_BUILTIN, forth_lbracket,    FLAG_IMMEDIATE, NULL);
+    temp = entryInit("[", 1, WORD_BUILTIN, forth_lbracket, FLAG_IMMEDIATE, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("]",         1, WORD_BUILTIN, forth_rbracket,    0, NULL);
+    temp = entryInit("]", 1, WORD_BUILTIN, forth_rbracket, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("LITERAL",   7, WORD_BUILTIN, forth_literal,     FLAG_IMMEDIATE, NULL);
+    temp = entryInit("LITERAL", 7, WORD_BUILTIN, forth_literal, FLAG_IMMEDIATE, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("[']",       3, WORD_BUILTIN, forth_tick_bracket, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("[']", 3, WORD_BUILTIN, forth_tick_bracket, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("[CHAR]",    6, WORD_BUILTIN, forth_char_bracket, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("[CHAR]", 6, WORD_BUILTIN, forth_char_bracket, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("POSTPONE",  8, WORD_BUILTIN, forth_postpone,    FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("POSTPONE", 8, WORD_BUILTIN, forth_postpone, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("IMMEDIATE", 9, WORD_BUILTIN, forth_immediate,   0, NULL);
+    temp = entryInit("IMMEDIATE", 9, WORD_BUILTIN, forth_immediate, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     // dictionary / parsing
 
-    temp = entryInit("FIND",     4, WORD_BUILTIN, forth_find,      0, NULL);
+    temp = entryInit("FIND", 4, WORD_BUILTIN, forth_find, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit(">BODY",    5, WORD_BUILTIN, forth_to_body,   0, NULL);
+    temp = entryInit(">BODY", 5, WORD_BUILTIN, forth_to_body, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("WORD",     4, WORD_BUILTIN, forth_word,      0, NULL);
+    temp = entryInit("WORD", 4, WORD_BUILTIN, forth_word, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit(">NUMBER",  7, WORD_BUILTIN, forth_to_number, 0, NULL);
+    temp = entryInit(">NUMBER", 7, WORD_BUILTIN, forth_to_number, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     // error handling
 
-    temp = entryInit("ABORT",    5, WORD_BUILTIN, forth_abort,        0, NULL);
+    temp = entryInit("ABORT", 5, WORD_BUILTIN, forth_abort, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("ABORT\"",  6, WORD_BUILTIN, forth_abort_quote,  FLAG_IMMEDIATE, NULL);
+    temp = entryInit("ABORT\"", 6, WORD_BUILTIN, forth_abort_quote, FLAG_IMMEDIATE, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("QUIT",     4, WORD_BUILTIN, forth_quit,         0, NULL);
+    temp = entryInit("QUIT", 4, WORD_BUILTIN, forth_quit, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     // defining words
 
-    temp = entryInit(":NONAME",  7, WORD_BUILTIN, forth_noname,       0, NULL);
+    temp = entryInit(":NONAME", 7, WORD_BUILTIN, forth_noname, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("VALUE",    5, WORD_BUILTIN, forth_value,        0, NULL);
+    temp = entryInit("VALUE", 5, WORD_BUILTIN, forth_value, 0, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("TO",       2, WORD_BUILTIN, forth_to,           0, NULL);
+    temp = entryInit("TO", 2, WORD_BUILTIN, forth_to, 0, NULL);
     dictionaryAdd(state->dict, temp);
 
     // case / of
 
-    temp = entryInit("CASE",    4, WORD_BUILTIN, forth_case,    FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("CASE", 4, WORD_BUILTIN, forth_case, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("OF",      2, WORD_BUILTIN, forth_of,      FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("OF", 2, WORD_BUILTIN, forth_of, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("ENDOF",   5, WORD_BUILTIN, forth_endof,   FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("ENDOF", 5, WORD_BUILTIN, forth_endof, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
-    temp = entryInit("ENDCASE",  7, WORD_BUILTIN, forth_endcase, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("ENDCASE", 7, WORD_BUILTIN, forth_endcase, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
     // ?DO
 
-    temp = entryInit("?DO",     3, WORD_BUILTIN, forth_qdo, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
+    temp = entryInit("?DO", 3, WORD_BUILTIN, forth_qdo, FLAG_IMMEDIATE|FLAG_COMPILE_ONLY, NULL);
     dictionaryAdd(state->dict, temp);
 
     // environment

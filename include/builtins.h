@@ -6,7 +6,7 @@
 #include "dict.h"
 
 // number base (changed by HEX / DECIMAL)
-extern int num_base;
+extern cell num_base;
 
 // data space for VARIABLE / ALLOT / HERE
 extern uint8_t data_space[DATA_SIZE];
